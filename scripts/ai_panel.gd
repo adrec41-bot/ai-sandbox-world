@@ -1,21 +1,24 @@
 extends Control
 ## ИИ-строитель в интерфейсе игры.
-## Внизу экрана поле ввода: игрок пишет «мельница», просьба уходит
-## подключённому ИИ-агенту по MCP, агент строит объект, и он появляется
-## перед игроком. Здесь же видно, что ответил агент.
+## Внизу по центру поле ввода на две строки: игрок пишет «мельница», просьба
+## уходит подключённому ИИ-агенту по MCP, агент создаёт объект, и он
+## попадает в инвентарь (полоска слотов над полем). Клавиши: 1–8 выбрать
+## слот, F поставить предмет перед собой, G подобрать объект, X удалить
+## предмет из инвентаря. Над инвентарём видно, что ответил агент.
 ## По F2 открывается панель подключения агента: готовые настройки для
 ## Claude Code, Cursor, VS Code и Claude Desktop копируются одной кнопкой.
 
 const AiGuide := preload("res://scripts/ai_guide.gd")
 
 ## Короткая команда для агента: с неё он начинает слушать просьбы игроков.
-const START_COMMAND := "Use the ai-sandbox-world MCP tools as the game's builder: call get_style_guide, then loop on wait_for_player_request and build each request with place_object. Keep looping until I stop you."
+const START_COMMAND := "Use the ai-sandbox-world MCP tools as the game's builder: call get_style_guide, then loop on wait_for_player_request and build each request with create_object. Keep looping until I stop you."
 
 var bridge
 var mcp
 var player
 
-var _field: LineEdit
+var _field: TextEdit
+var _slots: HBoxContainer
 var _status: Label
 var _online: Label
 var _status_left := 0.0
@@ -29,6 +32,8 @@ func _ready() -> void:
 	_build_prompt_bar()
 	_build_setup_panel()
 	bridge.agent_message.connect(_on_agent_message)
+	bridge.inventory_changed.connect(_refresh_inventory)
+	_refresh_inventory()
 
 
 func _process(delta: float) -> void:
@@ -58,13 +63,30 @@ func _input(event: InputEvent) -> void:
 			else:
 				return
 		KEY_ENTER, KEY_KP_ENTER:
-			# Enter в игре открывает поле ввода; отправку делает само поле.
+			if _panel.visible:
+				return
+			if _field.has_focus():
+				# Shift+Enter переносит строку, просто Enter отправляет.
+				if event.shift_pressed:
+					return
+				_submit()
+			else:
+				# Enter в игре открывает поле ввода.
+				Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+				_field.grab_focus()
+		_:
 			if _field.has_focus() or _panel.visible:
 				return
-			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-			_field.grab_focus()
-		_:
-			return
+			if event.keycode >= KEY_1 and event.keycode <= KEY_8:
+				bridge.select(event.keycode - KEY_1)
+			elif event.keycode == KEY_F:
+				_show(bridge.place_selected(), 3.0)
+			elif event.keycode == KEY_G:
+				_show(bridge.pick_up_in_front(), 3.0)
+			elif event.keycode == KEY_X:
+				_show(bridge.delete_selected(), 3.0)
+			else:
+				return
 	get_viewport().set_input_as_handled()
 
 
@@ -73,11 +95,12 @@ func _input(event: InputEvent) -> void:
 func _build_prompt_bar() -> void:
 	var bar := VBoxContainer.new()
 	bar.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
-	bar.offset_left = -320
-	bar.offset_right = 320
-	bar.offset_top = -132
-	bar.offset_bottom = -44
+	bar.offset_left = -380
+	bar.offset_right = 380
+	bar.offset_top = -250
+	bar.offset_bottom = -40
 	bar.alignment = BoxContainer.ALIGNMENT_END
+	bar.add_theme_constant_override("separation", 8)
 	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(bar)
 
@@ -85,19 +108,26 @@ func _build_prompt_bar() -> void:
 	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	bar.add_child(_status)
 
-	_field = LineEdit.new()
-	_field.placeholder_text = "Enter — попросить ИИ построить, например «мельница у реки»"
-	_field.max_length = 500
-	_field.custom_minimum_size = Vector2(0, 38)
+	_slots = HBoxContainer.new()
+	_slots.alignment = BoxContainer.ALIGNMENT_CENTER
+	_slots.add_theme_constant_override("separation", 8)
+	_slots.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	bar.add_child(_slots)
+
+	_field = TextEdit.new()
+	_field.placeholder_text = "Enter — попросить ИИ построить, например «мельница с лопастями» (Shift+Enter — новая строка)"
+	_field.wrap_mode = TextEdit.LINE_WRAPPING_BOUNDARY
+	_field.scroll_fit_content_height = false
+	_field.custom_minimum_size = Vector2(0, 66)
+	_field.add_theme_font_size_override("font_size", 17)
 	var bg := StyleBoxFlat.new()
-	bg.bg_color = Color(0.1, 0.09, 0.08, 0.75)
+	bg.bg_color = Color(0.1, 0.09, 0.08, 0.78)
 	bg.border_color = Color(1, 0.98, 0.94, 0.5)
 	bg.set_border_width_all(1)
-	bg.set_corner_radius_all(6)
-	bg.set_content_margin_all(8)
+	bg.set_corner_radius_all(8)
+	bg.set_content_margin_all(10)
 	_field.add_theme_stylebox_override("normal", bg)
 	_field.add_theme_stylebox_override("focus", bg)
-	_field.text_submitted.connect(_submit)
 	bar.add_child(_field)
 
 	_online = _label("", 13)
@@ -105,8 +135,8 @@ func _build_prompt_bar() -> void:
 	bar.add_child(_online)
 
 
-func _submit(text: String) -> void:
-	text = text.strip_edges()
+func _submit() -> void:
+	var text := _field.text.strip_edges()
 	_field.text = ""
 	_field.release_focus()
 	if text == "":
@@ -116,6 +146,31 @@ func _submit(text: String) -> void:
 		_show("Отправлено ИИ-агенту: «%s»" % text, 0.0)
 	else:
 		_show("ИИ-агент не подключён. Просьба подождёт его, подключить: F2", 8.0)
+
+
+## Перерисовывает слоты инвентаря.
+func _refresh_inventory() -> void:
+	for child in _slots.get_children():
+		child.queue_free()
+	for i in bridge.INVENTORY_SIZE:
+		var slot := PanelContainer.new()
+		slot.custom_minimum_size = Vector2(84, 62)
+		slot.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.08, 0.07, 0.06, 0.55)
+		sb.border_color = Color(1, 0.98, 0.94, 0.95 if i == bridge.selected else 0.35)
+		sb.set_border_width_all(3 if i == bridge.selected else 1)
+		sb.set_corner_radius_all(9)
+		sb.set_content_margin_all(4)
+		slot.add_theme_stylebox_override("panel", sb)
+		var name_text := ""
+		if i < bridge.inventory.size():
+			name_text = str(bridge.inventory[i].name)
+		var l := _label("%d\n%s" % [i + 1, name_text], 11)
+		l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		l.clip_text = true
+		slot.add_child(l)
+		_slots.add_child(slot)
 
 
 func _on_agent_message(_request_id: String, text: String, done: bool) -> void:

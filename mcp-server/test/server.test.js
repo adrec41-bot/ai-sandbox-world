@@ -40,7 +40,7 @@ function fakeWorld(port) {
       const { id, cmd, args } = JSON.parse(data.toString());
       const reply = (result) => ws.send(JSON.stringify({ id, ok: true, result }));
       if (cmd === "world_info") return reply({ world_size: 240, player: { position: [26, 6, 10] } });
-      if (cmd === "spawn") {
+      if (cmd === "create") {
         const obj = { id: `obj_${objects.length + 1}`, name: args.spec.name, author: args.author, prompt: args.prompt };
         objects.push(obj);
         return reply(obj);
@@ -88,38 +88,38 @@ test("lists tools and the style guide", async () => {
   const client = await connect({ sampling: false });
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
+    "create_object",
     "generate_object",
     "get_style_guide",
     "get_world_info",
     "list_objects",
     "move_object",
-    "place_object",
     "remove_object",
     "reply_to_player",
     "wait_for_player_request",
   ]);
   const { prompts } = await client.listPrompts();
   assert.equal(prompts[0].name, "builder");
-  const place = tools.find((t) => t.name === "place_object");
+  const place = tools.find((t) => t.name === "create_object");
   assert.ok(place.inputSchema.properties.spec.properties.parts, "spec schema is exposed to agents");
   const guide = await client.readResource({ uri: "style://guide" });
   assert.match(guide.contents[0].text, /Disney/);
 });
 
-test("place_object validates and spawns", async () => {
+test("create_object validates and adds to the inventory", async () => {
   const client = await connect({ sampling: false });
-  const bad = await client.callTool({ name: "place_object", arguments: { spec: { name: "x", parts: [{ shape: "lathe" }] } } });
+  const bad = await client.callTool({ name: "create_object", arguments: { spec: { name: "x", parts: [{ shape: "lathe" }] } } });
   assert.equal(bad.isError, true);
-  const ok = await client.callTool({ name: "place_object", arguments: { spec: HUT, prompt: "хижина", x: 10, z: 5 } });
+  const ok = await client.callTool({ name: "create_object", arguments: { spec: HUT, prompt: "хижина", request_id: "req_9" } });
   assert.ok(!ok.isError, ok.content[0].text);
-  assert.equal(JSON.parse(ok.content[0].text).placed.author, "test-agent");
+  assert.equal(JSON.parse(ok.content[0].text).created.author, "test-agent");
 });
 
 test("generate_object without a generator explains the fallback", async () => {
   const client = await connect({ sampling: false });
   const res = await client.callTool({ name: "generate_object", arguments: { prompt: "мельница" } });
   assert.equal(res.isError, true);
-  assert.match(res.content[0].text, /place_object/);
+  assert.match(res.content[0].text, /create_object/);
 });
 
 test("generate_object uses sampling with the hidden style prompt and retries", async () => {
@@ -128,7 +128,7 @@ test("generate_object uses sampling with the hidden style prompt and retries", a
   assert.ok(!res.isError, res.content[0].text);
   const body = JSON.parse(res.content[0].text);
   assert.equal(body.generator, "sampling");
-  assert.equal(body.placed.prompt, "хижина лесника");
+  assert.equal(body.created.prompt, "хижина лесника");
   assert.equal(samplingRequests.length, 2);
   assert.match(samplingRequests[0].systemPrompt, /hand-painted 1930s Disney/);
   const list = await client.callTool({ name: "list_objects", arguments: {} });

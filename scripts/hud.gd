@@ -26,8 +26,7 @@ func _draw() -> void:
 	_quest(font)
 	_minimap(font, Vector2(sz.x - 110, 110))
 	_bars(Vector2(36, sz.y - 96))
-	_hotbar(font, Vector2(sz.x - 36, sz.y - 40))
-	draw_string(font, Vector2(36, sz.y - 22), "WASD ходить · Shift бег · Пробел прыжок · клик захватить мышь · колесо зум · Esc отпустить · Enter попросить ИИ · F2 подключить ИИ", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, DIM)
+	draw_string(font, Vector2(36, sz.y - 22), "WASD ходить · Shift бег · Пробел прыжок · клик захватить мышь · колесо зум · Esc отпустить · Enter попросить ИИ · 1–8 слот · F поставить · G подобрать · F2 подключить ИИ", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, DIM)
 
 
 func _leaf(c: Vector2, r: float, col: Color) -> void:
@@ -52,8 +51,8 @@ func _quest(font: Font) -> void:
 	var d := Vector2(112, 58)
 	var diamond := PackedVector2Array([d + Vector2(0, -6), d + Vector2(6, 0), d + Vector2(0, 6), d + Vector2(-6, 0), d + Vector2(0, -6)])
 	draw_polyline(diamond, LINE, 1.5, true)
-	draw_string(font, Vector2(128, 64), "Исследуй мир", HORIZONTAL_ALIGNMENT_LEFT, -1, 19, LINE)
-	draw_string(font, Vector2(128, 88), "Найди новое место для строительства", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, DIM)
+	draw_string(font, Vector2(128, 64), "Создай свой мир", HORIZONTAL_ALIGNMENT_LEFT, -1, 19, LINE)
+	draw_string(font, Vector2(128, 88), "Нажми Enter и попроси ИИ что-нибудь построить", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, DIM)
 
 
 func _minimap(font: Font, c: Vector2) -> void:
@@ -67,18 +66,12 @@ func _minimap(font: Font, c: Vector2) -> void:
 	var yaw: float = player.yaw
 	var scale := r / 70.0
 	var me := Vector2(player.position.x, player.position.z)
-	var marks := [[world.village_center(), "дом"], [Vector2(world.VILLAGE_X - 42.0, world.river_z(world.VILLAGE_X - 42.0)), "мост"]]
-	for m in marks:
-		var rel: Vector2 = (m[0] - me).rotated(yaw) * scale
-		if rel.length() > r - 14:
-			rel = rel.normalized() * (r - 14)
-		draw_circle(c + rel, 4, LINE)
-	# Река как пунктир.
-	for i in 40:
-		var x := me.x - 70.0 + i * 3.5
-		var rel := (Vector2(x, world.river_z(x)) - me).rotated(yaw) * scale
-		if rel.length() < r - 10:
-			draw_circle(c + rel, 1.5, DIM)
+	# Поставленные в мир объекты точками.
+	if world.bridge:
+		for pos: Vector2 in world.bridge.placed_positions():
+			var rel: Vector2 = (pos - me).rotated(yaw) * scale
+			if rel.length() < r - 10:
+				draw_circle(c + rel, 3, LINE)
 	var tri := PackedVector2Array([c + Vector2(0, -9), c + Vector2(7, 7), c + Vector2(0, 3), c + Vector2(-7, 7)])
 	draw_colored_polygon(tri, LINE)
 	for p in [["N", 0.0], ["E", PI * 0.5], ["S", PI], ["W", -PI * 0.5]]:
@@ -106,39 +99,3 @@ func _bars(o: Vector2) -> void:
 func _bar(p: Vector2, v: float) -> void:
 	draw_rect(Rect2(p, Vector2(150, 8)), INK)
 	draw_rect(Rect2(p, Vector2(150 * v, 8)), LINE)
-
-
-func _hotbar(font: Font, right_bottom: Vector2) -> void:
-	var slot := 50.0
-	var gap := 10.0
-	var counts := ["", "", "3", "12", ""]
-	var x0 := right_bottom.x - 5 * slot - 4 * gap
-	for i in 5:
-		var r := Rect2(Vector2(x0 + i * (slot + gap), right_bottom.y - slot - 12), Vector2(slot, slot))
-		var sb := StyleBoxFlat.new()
-		sb.bg_color = INK
-		sb.border_color = LINE if i == 1 else DIM
-		sb.set_border_width_all(2)
-		sb.set_corner_radius_all(9)
-		draw_style_box(sb, r)
-		var c := r.get_center()
-		match i:
-			0:
-				# Кирка.
-				draw_line(c + Vector2(-10, 12), c + Vector2(8, -8), LINE, 2.5, true)
-				draw_arc(c + Vector2(6, -6), 11, PI * 0.95, PI * 1.6, 12, LINE, 2.5, true)
-			1:
-				# Молоток.
-				draw_line(c + Vector2(-9, 12), c + Vector2(5, -4), LINE, 2.5, true)
-				draw_rect(Rect2(c + Vector2(-2, -14), Vector2(16, 9)), LINE)
-			2:
-				_leaf(c + Vector2(0, 2), 16, LINE)
-			3:
-				# Бревно.
-				draw_rect(Rect2(c + Vector2(-12, -6), Vector2(20, 12)), LINE, false, 2.0)
-				draw_arc(c + Vector2(10, 0), 6, 0, TAU, 16, LINE, 2.0, true)
-			4:
-				for k in 3:
-					draw_circle(c + Vector2(-8 + k * 8, 0), 2.2, LINE)
-		if counts[i] != "":
-			draw_string(font, Vector2(c.x - 6, r.end.y + 12), counts[i], HORIZONTAL_ALIGNMENT_LEFT, -1, 11, DIM)

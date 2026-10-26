@@ -1,7 +1,10 @@
 extends Node
-## Мост между миром и ИИ-агентами. Здесь же очередь просьб игрока: игрок пишет
-## в поле внизу экрана, подключённый агент забирает просьбу командой
-## next_request, строит объект и отвечает через spawn или reply.
+## Мост между миром и ИИ-агентами. Здесь же очередь просьб игрока и инвентарь:
+## игрок пишет в поле внизу экрана, подключённый агент забирает просьбу
+## командой next_request, создаёт объект командой create (он попадает в
+## инвентарь) или отвечает через reply. Из инвентаря игрок сам ставит
+## предмет в мир (place_selected), предмет при этом остаётся в инвентаре
+## как чертёж, и его можно ставить сколько угодно раз.
 ##
 ## Игра слушает WebSocket на 127.0.0.1:7777,
 ## к нему подключается MCP-сервер из папки mcp-server. Каждое сообщение это
@@ -15,8 +18,11 @@ const Builder := preload("res://scripts/object_builder.gd")
 const Style := preload("res://scripts/style.gd")
 
 const PORT := 7777
-const SAVE_PATH := "user://agent_objects.json"
+const SAVE_PATH := "user://world.json"
 const MAX_OBJECTS := 500
+const INVENTORY_SIZE := 8
+## На каком расстоянии перед игроком ставится предмет из инвентаря.
+const PLACE_DISTANCE := 6.0
 
 var world
 var _server := TCPServer.new()
@@ -24,6 +30,10 @@ var _peers: Array[WebSocketPeer] = []
 ## id -> {"record": Dictionary, "node": Node3D}
 var _objects := {}
 var _next_id := 1
+## Инвентарь: {"item_id", "name", "spec", "author", "prompt", "created"}.
+var inventory: Array[Dictionary] = []
+var selected := 0
+var _next_item := 1
 var _toast: Label
 var _toast_left := 0.0
 ## Просьбы игрока: {"id", "text", "status": queued|taken|done, "x", "z", "time"}.
@@ -35,6 +45,8 @@ var waiting_agents := 0
 
 ## Новости для поля ввода: что ответил агент, построен ли объект.
 signal agent_message(request_id: String, text: String, done: bool)
+## Инвентарь или выбранный слот изменились.
+signal inventory_changed
 
 const AGENT_ONLINE_MS := 90000
 ## Если агент взял просьбу и молчит дольше, игрок увидит предупреждение.
@@ -101,14 +113,15 @@ func _handle(ws: WebSocketPeer, text: String) -> void:
 	ws.send_text(JSON.stringify(reply))
 
 
-## Выполняет команду мира. Её зовут и WebSocket-мост, и MCP внутри игры,
-## и панель ИИ. Ответ {"ok": true, "result"} или {"ok": false, "error"}.
+## Выполняет команду мира. Её зовут и WebSocket-мост, и MCP внутри игры. Ответ {"ok": true, "result"} или {"ok": false, "error"}.
 func run(cmd: String, args: Dictionary) -> Dictionary:
 	match cmd:
 		"world_info":
 			return _ok(_world_info(args))
-		"spawn":
-			return _spawn(args)
+		"create":
+			return _create(args)
+		"inventory":
+			return _ok(_inventory_summary())
 		"list":
 			return _ok(_list())
 		"move":
@@ -169,7 +182,7 @@ func _take_request():
 				"text": r.text,
 				"place_at": [r.x, r.z],
 				"player_position": r.player,
-				"how_to_answer": "Design the object and call place_object with this request_id (it is placed in front of the player automatically). If you cannot build it, call reply_to_player with a short answer in the player's language.",
+				"how_to_answer": "Design the object and call create_object with this request_id: it goes to the player's inventory. If you cannot build it, call reply_to_player with a short answer in the player's language.",
 			}
 	return null
 
@@ -200,19 +213,17 @@ func _find_request(id: String) -> Dictionary:
 func _world_info(args: Dictionary) -> Dictionary:
 	var p: Node3D = world.player
 	var fwd := Vector3(0, 0, -1).rotated(Vector3.UP, world.player.yaw)
-	var vc: Vector2 = world.village_center()
 	var info := {
-		"units": "meters; +Y is up; ground height depends on terrain",
+		"units": "meters; +Y is up; the world is a flat empty plain at y = 0",
 		"world_size": world.SIZE,
 		"buildable_half_extent": _limit(),
-		"water_level": world.WATER_LEVEL,
-		"village_center": [vc.x, vc.y],
-		"river_z_at_x0": world.river_z(0.0),
 		"player": {
 			"position": [p.position.x, p.position.y, p.position.z],
 			"facing": [fwd.x, fwd.z],
 		},
-		"objects": _objects.size(),
+		"objects_in_world": _objects.size(),
+		"inventory": _inventory_summary(),
+		"inventory_size": INVENTORY_SIZE,
 		"max_objects": MAX_OBJECTS,
 		"palette": Style.PALETTE.keys(),
 	}
@@ -226,44 +237,155 @@ func _world_info(args: Dictionary) -> Dictionary:
 	return info
 
 
-func _spawn(args: Dictionary) -> Dictionary:
-	if _objects.size() >= MAX_OBJECTS:
-		return _err("world is full (%d objects), remove something first" % MAX_OBJECTS)
+## Агент создал объект: он попадает в инвентарь игрока.
+func _create(args: Dictionary) -> Dictionary:
 	var spec = args.get("spec")
 	var problem := Builder.validate(spec)
 	if problem != "":
 		return _err(problem)
-
 	var request := _find_request(str(args.get("request_id", "")))
-	var pos := _default_position(float(args.get("distance", 8.0)))
-	# Объект по просьбе ставится туда, куда игрок смотрел, когда просил.
-	if not request.is_empty():
-		pos = Vector2(request.x, request.z)
-	if args.get("x") is float or args.get("x") is int:
-		pos.x = float(args.x)
-	if args.get("z") is float or args.get("z") is int:
-		pos.y = float(args.z)
+	if inventory.size() >= INVENTORY_SIZE:
+		var full := "Инвентарь полон: выбери ненужный предмет и нажми X."
+		if not request.is_empty():
+			request.status = "done"
+			agent_message.emit(request.id, full, true)
+		return _err("the player's inventory is full (%d items); tell them to free a slot" % INVENTORY_SIZE)
+	var prompt := str(args.get("prompt", ""))
+	var item := {
+		"item_id": "item_%d" % _next_item,
+		"name": str(spec.get("name", "объект")),
+		"spec": spec,
+		"author": str(args.get("author", "agent")),
+		"prompt": prompt if prompt != "" else str(request.get("text", "")),
+		"created": Time.get_datetime_string_from_system(true),
+	}
+	_next_item += 1
+	inventory.append(item)
+	selected = inventory.size() - 1
+	_save()
+	inventory_changed.emit()
+	var note := "«%s» в инвентаре, слот %d. Нажми F, чтобы поставить." % [item.name, inventory.size()]
+	if request.is_empty():
+		_notify("%s: %s" % [item.author, note])
+	else:
+		request.status = "done"
+		agent_message.emit(request.id, note, true)
+	_agent_seen_ms = Time.get_ticks_msec()
+	return _ok({"item_id": item.item_id, "name": item.name, "slot": inventory.size(), "where": "player's inventory"})
+
+
+func _inventory_summary() -> Array:
+	var out := []
+	for i in inventory.size():
+		out.append({"slot": i + 1, "item_id": inventory[i].item_id, "name": inventory[i].name, "author": inventory[i].author})
+	return out
+
+
+# --- Действия игрока с инвентарём -----------------------------------------
+
+func select(slot: int) -> void:
+	if slot >= 0 and slot < INVENTORY_SIZE:
+		selected = slot
+		inventory_changed.emit()
+
+
+## Ставит выбранный предмет перед игроком. Возвращает текст для игрока.
+func place_selected() -> String:
+	if selected >= inventory.size():
+		return "Слот пустой. Попроси ИИ что-нибудь построить (Enter)."
+	if _objects.size() >= MAX_OBJECTS:
+		return "В мире слишком много объектов, подбери что-нибудь (G)."
+	var item: Dictionary = inventory[selected]
+	# Большие постройки ставятся дальше, чтобы не появиться прямо на игроке.
+	var spot := _default_position(PLACE_DISTANCE + _footprint(item.spec))
 	var record := {
 		"id": "obj_%d" % _next_id,
-		"spec": spec,
-		"x": clampf(pos.x, -_limit(), _limit()),
-		"z": clampf(pos.y, -_limit(), _limit()),
-		"y_offset": clampf(float(args.get("y_offset", 0.0)), -20.0, 60.0),
-		"rotation_y": float(args.get("rotation_y", 0.0)),
-		"author": str(args.get("author", "agent")),
-		"prompt": str(args.get("prompt", "")) if str(args.get("prompt", "")) != "" else str(request.get("text", "")),
+		"item_id": item.item_id,
+		"spec": item.spec,
+		"x": clampf(spot.x, -_limit(), _limit()),
+		"z": clampf(spot.y, -_limit(), _limit()),
+		"y_offset": 0.0,
+		# Предмет разворачивается к игроку.
+		"rotation_y": rad_to_deg(world.player.yaw),
+		"author": item.author,
+		"prompt": item.prompt,
 		"created": Time.get_datetime_string_from_system(true),
 	}
 	_next_id += 1
 	_place(record)
 	_save()
-	if request.is_empty():
-		_notify("%s создаёт: %s" % [record.author, spec.get("name", "объект")])
-	else:
-		request.status = "done"
-		agent_message.emit(request.id, "Готово: %s" % spec.get("name", "объект"), true)
-	_agent_seen_ms = Time.get_ticks_msec()
-	return _ok(_summary(record))
+	return "Поставлено: %s" % item.name
+
+
+## Убирает из мира ближайший объект перед игроком. Возвращает текст для игрока.
+func pick_up_in_front() -> String:
+	var p: Node3D = world.player
+	var fwd := Vector3(0, 0, -1).rotated(Vector3.UP, world.player.yaw)
+	var probe := Vector2(p.position.x + fwd.x * 3.0, p.position.z + fwd.z * 3.0)
+	var best := ""
+	var best_d := 8.0
+	for id in _objects:
+		var node: Node3D = _objects[id].node
+		var d := probe.distance_to(Vector2(node.global_position.x, node.global_position.z))
+		if d < best_d:
+			best_d = d
+			best = id
+	if best == "":
+		return "Рядом нет объектов, которые можно подобрать."
+	var record: Dictionary = _objects[best].record
+	var item_name := str(record.spec.get("name", "объект"))
+	# Если чертежа уже нет в инвентаре, возвращаем его туда.
+	var known := false
+	for item in inventory:
+		if item.item_id == record.get("item_id", ""):
+			known = true
+	if not known:
+		if inventory.size() >= INVENTORY_SIZE:
+			return "Инвентарь полон: освободи слот (X), чтобы подобрать «%s»." % item_name
+		inventory.append({"item_id": "item_%d" % _next_item, "name": item_name, "spec": record.spec, "author": record.author, "prompt": record.prompt, "created": record.created})
+		_next_item += 1
+		inventory_changed.emit()
+	_objects[best].node.queue_free()
+	_objects.erase(best)
+	_save()
+	return "Подобрано: %s" % item_name
+
+
+## Удаляет выбранный предмет из инвентаря. Поставленные копии остаются в мире.
+func delete_selected() -> String:
+	if selected >= inventory.size():
+		return "Слот пустой."
+	var item: Dictionary = inventory[selected]
+	inventory.remove_at(selected)
+	selected = clampi(selected, 0, maxi(inventory.size() - 1, 0))
+	_save()
+	inventory_changed.emit()
+	return "Удалено из инвентаря: %s" % item.name
+
+
+## Примерный радиус объекта на земле, в метрах.
+func _footprint(spec: Dictionary) -> float:
+	var r := 0.0
+	for p in spec.get("parts", []):
+		if not p is Dictionary:
+			continue
+		var pos = p.get("position", [0, 0, 0])
+		var center := Vector2(float(pos[0]), float(pos[2])).length() if pos is Array and pos.size() >= 3 else 0.0
+		var half := 0.5
+		if p.get("size") is Array and (p["size"] as Array).size() >= 3:
+			half = maxf(float(p["size"][0]), float(p["size"][2])) * 0.5
+		elif p.get("radius") is float or p.get("radius") is int:
+			half = float(p["radius"])
+		r = maxf(r, center + half)
+	return minf(r, 30.0)
+
+
+func placed_positions() -> Array[Vector2]:
+	var out: Array[Vector2] = []
+	for id in _objects:
+		var node: Node3D = _objects[id].node
+		out.append(Vector2(node.global_position.x, node.global_position.z))
+	return out
 
 
 func _move(args: Dictionary) -> Dictionary:
@@ -346,7 +468,7 @@ func _save() -> void:
 		records.append(_objects[id].record)
 	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
 	if f:
-		f.store_string(JSON.stringify({"next_id": _next_id, "objects": records}))
+		f.store_string(JSON.stringify({"next_id": _next_id, "next_item": _next_item, "objects": records, "inventory": inventory}))
 
 
 func _load() -> void:
@@ -356,9 +478,14 @@ func _load() -> void:
 	if not data is Dictionary:
 		return
 	_next_id = int(data.get("next_id", 1))
+	_next_item = int(data.get("next_item", 1))
 	for record in data.get("objects", []):
 		if record is Dictionary and Builder.validate(record.get("spec")) == "":
 			_place(record)
+	for item in data.get("inventory", []):
+		if item is Dictionary and Builder.validate(item.get("spec")) == "" and inventory.size() < INVENTORY_SIZE:
+			inventory.append(item)
+	inventory_changed.emit()
 
 
 func _notify(text: String) -> void:

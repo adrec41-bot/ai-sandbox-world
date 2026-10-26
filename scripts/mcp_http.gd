@@ -5,8 +5,8 @@ extends Node
 ## Как агент узнаёт о просьбах игрока: MCP-запросы всегда идут от агента,
 ## поэтому агент вызывает wait_for_player_request, а игра держит этот запрос
 ## открытым, пока игрок не напишет что-нибудь в поле внизу экрана. Агент сам
-## придумывает форму объекта по руководству стиля и ставит её через
-## place_object, а игрок видит результат без всякого копирования.
+## придумывает форму объекта по руководству стиля и создаёт его через
+## create_object: объект попадает в инвентарь игрока, без всякого копирования.
 
 const AiGuide := preload("res://scripts/ai_guide.gd")
 
@@ -217,9 +217,9 @@ func _rpc(msg: Dictionary):
 	return {"jsonrpc": "2.0", "id": id, "result": result}
 
 
-func _call_tool(name: String, args: Dictionary) -> Dictionary:
+func _call_tool(tool_name: String, args: Dictionary) -> Dictionary:
 	var res: Dictionary
-	match name:
+	match tool_name:
 		"get_style_guide":
 			return _text(AiGuide.guide(), false)
 		"get_world_info":
@@ -230,15 +230,12 @@ func _call_tool(name: String, args: Dictionary) -> Dictionary:
 			return _text("No new requests yet. Call wait_for_player_request again." if request == null else JSON.stringify(request, "  "), false)
 		"reply_to_player":
 			res = bridge.run("reply", args)
-		"place_object":
-			var spawn := {"spec": args.get("spec"), "author": _client_name}
+		"create_object":
+			var create := {"spec": args.get("spec"), "author": _client_name}
 			for key in ["prompt", "request_id"]:
 				if args.get(key) is String:
-					spawn[key] = args[key]
-			for key in ["x", "z", "distance", "rotation_y", "y_offset"]:
-				if args.get(key) is float or args.get(key) is int:
-					spawn[key] = args[key]
-			res = bridge.run("spawn", spawn)
+					create[key] = args[key]
+			res = bridge.run("create", create)
 		"list_objects":
 			res = bridge.run("list", {})
 		"move_object":
@@ -246,7 +243,7 @@ func _call_tool(name: String, args: Dictionary) -> Dictionary:
 		"remove_object":
 			res = bridge.run("remove", args)
 		_:
-			return _text("Unknown tool: %s" % name, true)
+			return _text("Unknown tool: %s" % tool_name, true)
 	if res.ok:
 		return _text(JSON.stringify(res.result, "  "), false)
 	return _text(res.error, true)
@@ -261,12 +258,12 @@ func _tools() -> Array:
 	return [
 		{
 			"name": "get_style_guide",
-			"description": "The world's style rules and the JSON object spec accepted by place_object. Read it before designing objects.",
+			"description": "The world's style rules and the JSON object spec accepted by create_object. Read it before designing objects.",
 			"inputSchema": {"type": "object", "properties": {}},
 		},
 		{
 			"name": "wait_for_player_request",
-			"description": "Wait until a player types a request in the game's input field, then return it with its request_id. Returns 'no new requests' after timeout_seconds; then call it again. Build the request with place_object (pass request_id) or answer with reply_to_player.",
+			"description": "Wait until a player types a request in the game's input field, then return it with its request_id. Returns 'no new requests' after timeout_seconds; then call it again. Build the request with create_object (pass request_id) or answer with reply_to_player.",
 			"inputSchema": {"type": "object", "properties": {
 				"timeout_seconds": {"type": "number", "description": "How long to wait, 1-300 seconds (default 50)."},
 			}},
@@ -288,34 +285,29 @@ func _tools() -> Array:
 			}},
 		},
 		{
-			"name": "place_object",
-			"description": "Create an object you designed in the world. Pass request_id when building a player request. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names. Omit x and z to place it in front of the player.",
+			"name": "create_object",
+			"description": "Create an object you designed and put it into the player's inventory; the player places it in the world themselves. Pass request_id when building a player request. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names.",
 			"inputSchema": {"type": "object", "required": ["spec"], "properties": {
 				"spec": {"type": "object", "description": "Object spec: {name, physics: {mode}, parts: [...], effects: [...]}"},
-				"request_id": {"type": "string", "description": "The request from wait_for_player_request this object answers. The object is then placed where the player was looking."},
+				"request_id": {"type": "string", "description": "The request from wait_for_player_request this object answers."},
 				"prompt": {"type": "string", "description": "What the player asked for."},
-				"x": number,
-				"z": number,
-				"distance": {"type": "number", "description": "Meters in front of the player when x/z are omitted (default 8)."},
-				"rotation_y": {"type": "number", "description": "Yaw in degrees."},
-				"y_offset": {"type": "number", "description": "Lift above the ground in meters."},
 			}},
 		},
 		{
 			"name": "list_objects",
-			"description": "All objects created by agents: id, name, author, prompt, position.",
+			"description": "Objects the players have placed in the world: id, name, author, prompt, position.",
 			"inputSchema": {"type": "object", "properties": {}},
 		},
 		{
 			"name": "move_object",
-			"description": "Move or rotate an object created by an agent.",
+			"description": "Move or rotate an object placed in the world.",
 			"inputSchema": {"type": "object", "required": ["id"], "properties": {
 				"id": {"type": "string"}, "x": number, "z": number, "rotation_y": number, "y_offset": number,
 			}},
 		},
 		{
 			"name": "remove_object",
-			"description": "Delete an object created by an agent.",
+			"description": "Delete an object placed in the world.",
 			"inputSchema": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string"}}},
 		},
 	]
