@@ -100,4 +100,4 @@ Door: "mechanics": {"type": "prop", "interact": "toggle",
   "animations": [{"part": "door", "motion": "angle", "axis": "y", "amount": 100, "by": "active", "pivot": [-0.5, 1, 0]}]}
 
 World physics: set_world_physics changes gravity, player speed, jump and time
-scale for everyone in the world (e.g. gravity 0.16 for the moon).
+scale in the player's world (e.g. gravity 0.16 for the moon).
