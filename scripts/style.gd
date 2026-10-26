@@ -39,6 +39,29 @@ const PALETTE := {
 static var _cache := {}
 
 
+## Приводит любой цвет к палитре мира. Имя из PALETTE берётся как есть,
+## а произвольный цвет заменяется ближайшим по яркости тоном палитры:
+## кадр всё равно сепийный, поэтому важна только яркость.
+static func to_palette(value) -> Color:
+	if value is String and PALETTE.has(value):
+		return PALETTE[value]
+	var c := Color.GRAY
+	if value is Color:
+		c = value
+	elif value is String and Color.html_is_valid(value):
+		c = Color.html(value)
+	var best: Color = PALETTE.stone
+	var best_d := INF
+	for key: String in PALETTE:
+		if key in ["window", "fire", "smoke", "cloud"]:
+			continue
+		var d := absf(PALETTE[key].get_luminance() - c.get_luminance())
+		if d < best_d:
+			best_d = d
+			best = PALETTE[key]
+	return best
+
+
 ## Материал мира: тун-освещение плюс контур, если толщина больше нуля.
 static func toon(color: Color, outline := 0.05, vertex_color := false, sway := 0.0) -> ShaderMaterial:
 	var key := "%s|%s|%s|%s" % [color.to_html(), outline, vertex_color, sway]

@@ -10,6 +10,7 @@ const Scenery := preload("res://scripts/scenery.gd")
 const PlayerScript := preload("res://scripts/player.gd")
 const PetScript := preload("res://scripts/pet.gd")
 const HudScript := preload("res://scripts/hud.gd")
+const AgentBridge := preload("res://scripts/agent_bridge.gd")
 const WATER_SHADER := preload("res://shaders/water.gdshader")
 
 const SIZE := 240.0
@@ -46,6 +47,11 @@ func _ready() -> void:
 	var layer := CanvasLayer.new()
 	layer.add_child(hud)
 	add_child(layer)
+	# Через мост ИИ-агенты по MCP создают в мире новые объекты.
+	var bridge: Node = AgentBridge.new()
+	bridge.name = "AgentBridge"
+	bridge.world = self
+	add_child(bridge)
 
 
 func _process(delta: float) -> void:
