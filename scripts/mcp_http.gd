@@ -236,6 +236,12 @@ func _call_tool(tool_name: String, args: Dictionary) -> Dictionary:
 				if args.get(key) is String:
 					create[key] = args[key]
 			res = bridge.run("create", create)
+		"set_world_physics":
+			var change := {"author": _client_name}
+			for key in ["gravity", "player_speed", "jump", "time_scale", "reset"]:
+				if args.has(key):
+					change[key] = args[key]
+			res = bridge.run("set_physics", change)
 		"list_objects":
 			res = bridge.run("list", {})
 		"move_object":
@@ -286,11 +292,19 @@ func _tools() -> Array:
 		},
 		{
 			"name": "create_object",
-			"description": "Create an object you designed and put it into the player's inventory; the player places it in the world themselves. Pass request_id when building a player request. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names.",
+			"description": "Create an object you designed and put it into the player's inventory; the player places it in the world themselves. Pass request_id when building a player request. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names. Add spec.mechanics to make it rideable (vehicle: bicycle, car, plane, helicopter), wearable (equipment: jetpack, wings, boots) or interactive (prop: trampoline, door, carousel); see the mechanics section of the guide.",
 			"inputSchema": {"type": "object", "required": ["spec"], "properties": {
-				"spec": {"type": "object", "description": "Object spec: {name, physics: {mode}, parts: [...], effects: [...]}"},
+				"spec": {"type": "object", "description": "Object spec: {name, physics: {mode}, parts: [...], effects: [...], mechanics: {type, ...}}"},
 				"request_id": {"type": "string", "description": "The request from wait_for_player_request this object answers."},
 				"prompt": {"type": "string", "description": "What the player asked for."},
+			}},
+		},
+		{
+			"name": "set_world_physics",
+			"description": "Change the physics of the whole shared world for everyone: gravity (1 normal, 0.16 moon, 0 weightless, up to 5), player_speed (0.2-5), jump height (0.2-5), time_scale (0.1-3, slow motion below 1). Omitted values stay as they are; reset: true restores defaults. Returns the current values.",
+			"inputSchema": {"type": "object", "properties": {
+				"gravity": number, "player_speed": number, "jump": number, "time_scale": number,
+				"reset": {"type": "boolean"},
 			}},
 		},
 		{

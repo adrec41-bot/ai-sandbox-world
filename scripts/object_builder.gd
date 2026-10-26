@@ -10,11 +10,14 @@ extends RefCounted
 ##   "physics": {"mode": "static" | "rigid" | "none", "mass": 50},
 ##   "parts": [{"shape": "box", "size": [2, 3, 2], "position": [0, 1.5, 0],
 ##              "rotation": [0, 45, 0], "color": "wall"}, ...],
-##   "effects": [{"type": "smoke" | "light", "position": [0, 4, 0]}]
+##   "effects": [{"type": "smoke" | "light", "position": [0, 4, 0]}],
+##   "mechanics": {"type": "vehicle" | "equipment" | "prop", ...}
 ## }
 ## Ноль по Y это уровень земли под объектом, единицы в метрах, углы в градусах.
+## Механики (транспорт, снаряжение, анимации) описаны в scripts/mechanics/mechanics.gd.
 
 const Style := preload("res://scripts/style.gd")
+const Mechanics := preload("res://scripts/mechanics/mechanics.gd")
 
 const MAX_PARTS := 256
 const MAX_EFFECTS := 16
@@ -25,16 +28,18 @@ const SHAPES := ["box", "sphere", "cylinder", "cone", "capsule", "torus", "prism
 
 static func build(spec: Dictionary) -> Node3D:
 	var physics: Dictionary = spec.get("physics") if spec.get("physics") is Dictionary else {}
-	var root: Node3D
-	match str(physics.get("mode", "static")):
-		"rigid":
-			var rb := RigidBody3D.new()
-			rb.mass = clampf(_num(physics.get("mass"), 10.0), 0.1, 5000.0)
-			root = rb
-		"none":
-			root = Node3D.new()
-		_:
-			root = StaticBody3D.new()
+	# Транспорту нужен свой вид тела, остальное решает physics.mode.
+	var root: Node3D = Mechanics.make_root(spec)
+	if root == null:
+		match str(physics.get("mode", "static")):
+			"rigid":
+				var rb := RigidBody3D.new()
+				rb.mass = clampf(_num(physics.get("mass"), 10.0), 0.1, 5000.0)
+				root = rb
+			"none":
+				root = Node3D.new()
+			_:
+				root = StaticBody3D.new()
 	root.name = str(spec.get("name", "object")).validate_node_name()
 
 	var parts: Array = spec.get("parts") if spec.get("parts") is Array else []
@@ -46,6 +51,7 @@ static func build(spec: Dictionary) -> Node3D:
 	for i in mini(effects.size(), MAX_EFFECTS):
 		if effects[i] is Dictionary:
 			_add_effect(root, effects[i])
+	Mechanics.setup(root, spec)
 	return root
 
 
@@ -64,7 +70,7 @@ static func validate(spec) -> String:
 			return "parts[%d] must be an object" % i
 		if not str(p.get("shape", "")) in SHAPES:
 			return "parts[%d].shape must be one of %s" % [i, ", ".join(SHAPES)]
-	return ""
+	return Mechanics.validate(spec.get("mechanics"))
 
 
 static func _add_part(root: Node3D, p: Dictionary) -> void:
@@ -80,6 +86,10 @@ static func _add_part(root: Node3D, p: Dictionary) -> void:
 	mi.mesh = mesh
 	mi.transform = xf
 	mi.material_override = _material(p)
+	# По id детали её находят анимации механик (колёса, пропеллер, дверь).
+	var part_id := str(p.get("id", ""))
+	if part_id != "":
+		mi.set_meta("part_id", part_id)
 	root.add_child(mi)
 
 	var collide = p.get("collide", true)
@@ -88,6 +98,8 @@ static func _add_part(root: Node3D, p: Dictionary) -> void:
 		# Масштаб и поворот запекаются в форму: неравномерный масштаб
 		# у CollisionShape3D физика не поддерживает.
 		col.shape = Style.merge([[mesh, xf]]).create_convex_shape()
+		if part_id != "":
+			col.set_meta("part_id", part_id)
 		root.add_child(col)
 
 

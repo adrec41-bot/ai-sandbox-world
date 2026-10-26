@@ -16,6 +16,7 @@ extends Node
 
 const Builder := preload("res://scripts/object_builder.gd")
 const Style := preload("res://scripts/style.gd")
+const WorldPhysics := preload("res://scripts/mechanics/world_physics.gd")
 
 const PORT := 7777
 const SAVE_PATH := "user://world.json"
@@ -25,6 +26,8 @@ const INVENTORY_SIZE := 8
 const PLACE_DISTANCE := 6.0
 
 var world
+## Гравитация, скорость игроков и замедление времени, которые задают агенты.
+var physics: Node
 var _server := TCPServer.new()
 var _peers: Array[WebSocketPeer] = []
 ## id -> {"record": Dictionary, "node": Node3D}
@@ -73,6 +76,10 @@ func _ready() -> void:
 	layer.add_child(_toast)
 	add_child(layer)
 
+	physics = WorldPhysics.new()
+	physics.name = "WorldPhysics"
+	physics.world = world
+	add_child(physics)
 	_load()
 
 
@@ -132,6 +139,10 @@ func run(cmd: String, args: Dictionary) -> Dictionary:
 			return _ok(_take_request())
 		"reply":
 			return _reply(args)
+		"set_physics":
+			var values: Dictionary = physics.set_values(args)
+			_notify("%s меняет физику мира" % str(args.get("author", "ИИ-агент")))
+			return _ok(values)
 	return _err("unknown command: %s" % cmd)
 
 
@@ -226,6 +237,8 @@ func _world_info(args: Dictionary) -> Dictionary:
 		"inventory_size": INVENTORY_SIZE,
 		"max_objects": MAX_OBJECTS,
 		"palette": Style.PALETTE.keys(),
+		"physics": WorldPhysics.values(),
+		"physics_params": WorldPhysics.describe(),
 	}
 	# Высота земли в запрошенных точках [[x, z], ...].
 	if args.get("points") is Array:
@@ -428,7 +441,7 @@ func _place(record: Dictionary) -> void:
 	var node := Builder.build(spec)
 	var ground: float = world.height_at(record.x, record.z)
 	# Подвижные предметы появляются чуть выше и падают на землю сами.
-	var lift := 0.4 if node is RigidBody3D else 0.0
+	var lift := 0.4 if node is RigidBody3D else (0.1 if node is CharacterBody3D else 0.0)
 	node.position = Vector3(record.x, ground + record.y_offset + lift, record.z)
 	node.rotation.y = deg_to_rad(record.rotation_y)
 	node.set_meta("agent_object_id", record.id)

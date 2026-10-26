@@ -4,6 +4,7 @@ extends RefCounted
 ## поэтому все пути генерации получают один и тот же скрытый базовый промт.
 
 const GUIDE_PATH := "res://ai/style_guide.md"
+const MECHANICS_PATH := "res://ai/mechanics_guide.md"
 const BUILDER_PATH := "res://ai/builder_prompt.md"
 
 static var _guide := ""
@@ -11,7 +12,7 @@ static var _guide := ""
 
 static func guide() -> String:
 	if _guide == "":
-		_guide = FileAccess.get_file_as_string(GUIDE_PATH).strip_edges()
+		_guide = FileAccess.get_file_as_string(GUIDE_PATH).strip_edges() + "\n\n" + FileAccess.get_file_as_string(MECHANICS_PATH).strip_edges()
 	return _guide
 
 
