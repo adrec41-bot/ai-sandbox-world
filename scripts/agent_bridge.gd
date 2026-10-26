@@ -203,7 +203,7 @@ func _reply(args: Dictionary) -> Dictionary:
 	if text == "":
 		return _err("text is empty")
 	var id := str(args.get("request_id", ""))
-	var done := not (args.get("done") is bool and args.get("done") == false)
+	var done: bool = not (args.get("done") is bool and args.get("done") == false)
 	var r := _find_request(id)
 	if not r.is_empty() and done:
 		r.status = "done"
