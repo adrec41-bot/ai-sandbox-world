@@ -32,6 +32,24 @@ const objects = [];
 const requests = [];
 const replies = [];
 const samplingRequests = [];
+const physicsChanges = [];
+
+const BICYCLE = {
+  name: "Велосипед",
+  parts: [
+    { shape: "torus", id: "wheel", radius: 0.35, inner_radius: 0.3, position: [0, 0.35, 0.55], rotation: [0, 0, 90], color: "beam" },
+    { shape: "torus", id: "wheel", radius: 0.35, inner_radius: 0.3, position: [0, 0.35, -0.55], rotation: [0, 0, 90], color: "beam" },
+    { shape: "box", size: [0.06, 0.06, 1.1], position: [0, 0.6, 0], color: "wood" },
+  ],
+  mechanics: {
+    type: "vehicle",
+    movement: "ground",
+    seat: [0, 0.95, 0.15],
+    max_speed: 9,
+    lean: 20,
+    animations: [{ part: "wheel", motion: "spin", axis: "x", amount: -1500, by: "speed" }],
+  },
+};
 
 function fakeWorld(port) {
   wss = new WebSocketServer({ port, host: "127.0.0.1" });
@@ -46,6 +64,10 @@ function fakeWorld(port) {
         return reply(obj);
       }
       if (cmd === "list") return reply(objects);
+      if (cmd === "set_physics") {
+        physicsChanges.push(args);
+        return reply({ gravity: args.gravity ?? 1, player_speed: 1, jump: 1, time_scale: 1 });
+      }
       if (cmd === "next_request") return reply(requests.shift() ?? null);
       if (cmd === "reply") {
         replies.push(args);
@@ -96,6 +118,7 @@ test("lists tools and the style guide", async () => {
     "move_object",
     "remove_object",
     "reply_to_player",
+    "set_world_physics",
     "wait_for_player_request",
   ]);
   const { prompts } = await client.listPrompts();
@@ -161,4 +184,45 @@ test("wait_for_player_request returns a request typed in the game", async () => 
   const res = await client.callTool({ name: "reply_to_player", arguments: { text: "Не понял", request_id: "req_1" } });
   assert.ok(!res.isError);
   assert.equal(replies[0].text, "Не понял");
+});
+
+test("create_object accepts mechanics and rejects broken ones", async () => {
+  const client = await connect({ sampling: false });
+  const ok = await client.callTool({ name: "create_object", arguments: { spec: BICYCLE, prompt: "велосипед" } });
+  assert.ok(!ok.isError, ok.content[0].text);
+  const jetpack = {
+    name: "Ранец",
+    parts: [{ shape: "box", size: [0.4, 0.5, 0.2], color: "wood" }],
+    mechanics: { type: "equipment", attach: "back", abilities: { fly: 10 } },
+  };
+  const worn = await client.callTool({ name: "create_object", arguments: { spec: jetpack } });
+  assert.ok(!worn.isError, worn.content[0].text);
+
+  const noPart = structuredClone(BICYCLE);
+  noPart.mechanics.animations[0].part = "pedal";
+  const bad = await client.callTool({ name: "create_object", arguments: { spec: noPart } });
+  assert.equal(bad.isError, true);
+  assert.match(bad.content[0].text, /pedal/);
+
+  const tooFast = structuredClone(BICYCLE);
+  tooFast.mechanics.max_speed = 1000;
+  const fast = await client.callTool({ name: "create_object", arguments: { spec: tooFast } });
+  assert.equal(fast.isError, true);
+});
+
+test("set_world_physics passes changes to the game", async () => {
+  const client = await connect({ sampling: false });
+  const res = await client.callTool({ name: "set_world_physics", arguments: { gravity: 0.16 } });
+  assert.ok(!res.isError, res.content[0].text);
+  assert.equal(JSON.parse(res.content[0].text).gravity, 0.16);
+  assert.equal(physicsChanges.at(-1).gravity, 0.16);
+  assert.equal(physicsChanges.at(-1).author, "test-agent");
+  const bad = await client.callTool({ name: "set_world_physics", arguments: { gravity: 50 } });
+  assert.equal(bad.isError, true);
+});
+
+test("the guide explains mechanics", async () => {
+  const client = await connect({ sampling: false });
+  const guide = await client.callTool({ name: "get_style_guide", arguments: {} });
+  assert.match(guide.content[0].text, /"type": "vehicle"/);
 });

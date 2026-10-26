@@ -179,7 +179,9 @@ export function createServer(world) {
         "Create an object you designed yourself and put it into the player's inventory; the player places it in the world. " +
         "Pass request_id when building a player request. Read get_style_guide first: " +
         "parts are boxes, prisms, spheres, cylinders, cones, capsules, tori, lathes and extrusions in meters, " +
-        "y = 0 is the ground, colors are palette names. The game renders everything with the world's shader and palette.",
+        "y = 0 is the ground, colors are palette names. The game renders everything with the world's shader and palette. " +
+        "Add spec.mechanics to make it rideable (vehicle: bicycle, car, plane, helicopter), wearable (equipment: jetpack, " +
+        "wings, boots) or interactive (prop: trampoline, door, carousel), as described in the guide.",
       inputSchema: {
         spec: objectSpecSchema,
         prompt: z.string().max(2000).optional().describe("The original request, stored with the object."),
@@ -191,6 +193,31 @@ export function createServer(world) {
       if (checked.error) return failure(checked.error);
       try {
         return text({ created: await create(checked.spec, prompt || "", args) });
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
+    "set_world_physics",
+    {
+      title: "Set world physics",
+      description:
+        "Change the physics of the whole shared world for everyone: gravity (1 normal, 0.16 moon, 0 weightless), " +
+        "player speed, jump height and time scale (below 1 is slow motion). Omitted values stay as they are; " +
+        "reset: true restores the defaults. Returns the current values.",
+      inputSchema: {
+        gravity: z.number().min(0).max(5).optional().describe("Gravity multiplier, 1 is normal."),
+        player_speed: z.number().min(0.2).max(5).optional().describe("Walking and running speed multiplier."),
+        jump: z.number().min(0.2).max(5).optional().describe("Jump height multiplier."),
+        time_scale: z.number().min(0.1).max(3).optional().describe("Game speed, 1 is normal."),
+        reset: z.boolean().optional().describe("Restore all defaults first."),
+      },
+    },
+    async (args) => {
+      try {
+        return text(await world.request("set_physics", { ...args, author: author() }));
       } catch (err) {
         return failure(err.message);
       }

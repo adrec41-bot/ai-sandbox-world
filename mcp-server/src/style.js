@@ -6,10 +6,13 @@
 // когда агент подключается к ней напрямую или игрок копирует промт для чата.
 import { readFileSync } from "node:fs";
 
-export const STYLE_GUIDE = readFileSync(new URL("../../ai/style_guide.md", import.meta.url), "utf8").trim();
+const read = (name) => readFileSync(new URL(`../../ai/${name}`, import.meta.url), "utf8").trim();
+
+// Руководство по стилю и раздел о механиках (транспорт, снаряжение, предметы).
+export const STYLE_GUIDE = `${read("style_guide.md")}\n\n${read("mechanics_guide.md")}`;
 
 // Инструкция для агента-строителя: слушать просьбы из поля ввода в игре и строить.
-export const BUILDER_PROMPT = readFileSync(new URL("../../ai/builder_prompt.md", import.meta.url), "utf8").trim();
+export const BUILDER_PROMPT = read("builder_prompt.md");
 
 export const GENERATION_SYSTEM_PROMPT = `${STYLE_GUIDE}
 
