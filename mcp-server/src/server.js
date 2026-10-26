@@ -3,7 +3,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { checkSpec, objectSpecSchema } from "./spec.js";
 import { availableGenerator, generateSpec } from "./generate.js";
-import { BASE_STYLE_PROMPT, SPEC_FORMAT } from "./style.js";
+import { STYLE_GUIDE } from "./style.js";
 
 const PLAYER_NAME = process.env.PLAYER_NAME || "";
 
@@ -50,7 +50,7 @@ export function createServer(world) {
       mimeType: "text/markdown",
     },
     async (uri) => ({
-      contents: [{ uri: uri.href, mimeType: "text/markdown", text: `${BASE_STYLE_PROMPT}\n\n${SPEC_FORMAT}` }],
+      contents: [{ uri: uri.href, mimeType: "text/markdown", text: `${STYLE_GUIDE}` }],
     }),
   );
 
@@ -97,7 +97,7 @@ export function createServer(world) {
         return failure(
           "No built-in generator is configured on this server (no ANTHROPIC_API_KEY and your client does not support MCP sampling). " +
             "Design the object yourself: write a spec that follows the guide below, then call place_object with it and the same prompt.\n\n" +
-            `${BASE_STYLE_PROMPT}\n\n${SPEC_FORMAT}`,
+            `${STYLE_GUIDE}`,
         );
       }
       try {

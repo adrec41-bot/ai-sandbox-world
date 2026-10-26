@@ -11,6 +11,8 @@ const PlayerScript := preload("res://scripts/player.gd")
 const PetScript := preload("res://scripts/pet.gd")
 const HudScript := preload("res://scripts/hud.gd")
 const AgentBridge := preload("res://scripts/agent_bridge.gd")
+const McpHttp := preload("res://scripts/mcp_http.gd")
+const AiPanel := preload("res://scripts/ai_panel.gd")
 const WATER_SHADER := preload("res://shaders/water.gdshader")
 
 const SIZE := 240.0
@@ -52,6 +54,15 @@ func _ready() -> void:
 	bridge.name = "AgentBridge"
 	bridge.world = self
 	add_child(bridge)
+	var mcp: Node = McpHttp.new()
+	mcp.name = "McpHttp"
+	mcp.bridge = bridge
+	add_child(mcp)
+	var panel: Control = AiPanel.new()
+	panel.bridge = bridge
+	panel.mcp = mcp
+	panel.player = player
+	layer.add_child(panel)
 
 
 func _process(delta: float) -> void:

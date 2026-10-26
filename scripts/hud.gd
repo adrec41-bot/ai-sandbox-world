@@ -27,7 +27,7 @@ func _draw() -> void:
 	_minimap(font, Vector2(sz.x - 110, 110))
 	_bars(Vector2(36, sz.y - 96))
 	_hotbar(font, Vector2(sz.x - 36, sz.y - 40))
-	draw_string(font, Vector2(36, sz.y - 22), "WASD ходить · Shift бег · Пробел прыжок · клик захватить мышь · колесо зум · Esc отпустить", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, DIM)
+	draw_string(font, Vector2(36, sz.y - 22), "WASD ходить · Shift бег · Пробел прыжок · клик захватить мышь · колесо зум · Esc отпустить · F2 ИИ-строитель", HORIZONTAL_ALIGNMENT_LEFT, -1, 13, DIM)
 
 
 func _leaf(c: Vector2, r: float, col: Color) -> void:

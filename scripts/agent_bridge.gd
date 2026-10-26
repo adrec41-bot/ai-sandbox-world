@@ -74,22 +74,26 @@ func _handle(ws: WebSocketPeer, text: String) -> void:
 	if not msg is Dictionary:
 		return
 	var args: Dictionary = msg.get("args") if msg.get("args") is Dictionary else {}
-	var reply: Dictionary
-	match str(msg.get("cmd", "")):
-		"world_info":
-			reply = _ok(_world_info(args))
-		"spawn":
-			reply = _spawn(args)
-		"list":
-			reply = _ok(_list())
-		"move":
-			reply = _move(args)
-		"remove":
-			reply = _remove(args)
-		var cmd:
-			reply = _err("unknown command: %s" % cmd)
+	var reply := run(str(msg.get("cmd", "")), args)
 	reply["id"] = msg.get("id")
 	ws.send_text(JSON.stringify(reply))
+
+
+## Выполняет команду мира. Её зовут и WebSocket-мост, и MCP внутри игры,
+## и панель ИИ. Ответ {"ok": true, "result"} или {"ok": false, "error"}.
+func run(cmd: String, args: Dictionary) -> Dictionary:
+	match cmd:
+		"world_info":
+			return _ok(_world_info(args))
+		"spawn":
+			return _spawn(args)
+		"list":
+			return _ok(_list())
+		"move":
+			return _move(args)
+		"remove":
+			return _remove(args)
+	return _err("unknown command: %s" % cmd)
 
 
 # --- Команды --------------------------------------------------------------
