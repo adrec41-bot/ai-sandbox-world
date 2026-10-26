@@ -24,6 +24,8 @@ var yaw := 0.0
 var pitch := -0.12
 var walk_time := 0.0
 var spawn: Vector3
+## Пока открыта панель ИИ, клавиши не двигают персонажа.
+var frozen := false
 
 
 func _ready() -> void:
@@ -161,6 +163,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _key(a: Key, b: Key) -> float:
+	if frozen:
+		return 0.0
 	return 1.0 if Input.is_key_pressed(a) or Input.is_key_pressed(b) else 0.0
 
 
@@ -173,7 +177,7 @@ func _physics_process(delta: float) -> void:
 	if dir.length() > 1.0:
 		dir = dir.normalized()
 	var swimming := position.y < SWIM_DEPTH
-	var speed := RUN if Input.is_key_pressed(KEY_SHIFT) else WALK
+	var speed := RUN if _key(KEY_SHIFT, KEY_SHIFT) > 0.0 else WALK
 	if swimming:
 		speed *= 0.5
 	velocity.x = move_toward(velocity.x, dir.x * speed, 40.0 * delta)
@@ -182,11 +186,11 @@ func _physics_process(delta: float) -> void:
 	if swimming:
 		# Плавучесть: держимся у поверхности, прыжком выбираемся на берег.
 		velocity.y = lerpf(velocity.y, (SWIM_DEPTH - position.y) * 4.0, 5.0 * delta)
-		if Input.is_key_pressed(KEY_SPACE):
+		if _key(KEY_SPACE, KEY_SPACE) > 0.0:
 			velocity.y = JUMP * 0.7
 	elif not is_on_floor():
 		velocity.y -= GRAVITY * delta
-	elif Input.is_key_pressed(KEY_SPACE):
+	elif _key(KEY_SPACE, KEY_SPACE) > 0.0:
 		velocity.y = JUMP
 	move_and_slide()
 

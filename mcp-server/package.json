@@ -1,0 +1,23 @@
+{
+  "name": "ai-sandbox-world-mcp",
+  "version": "0.1.0",
+  "description": "MCP-сервер, через который ИИ-агенты создают объекты в мире AI Sandbox World",
+  "type": "module",
+  "bin": {
+    "ai-sandbox-world-mcp": "src/index.js"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "start:http": "node src/index.js --http 8787",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.3.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ws": "^8.22.0",
+    "zod": "^4.6.7"
+  }
+}
