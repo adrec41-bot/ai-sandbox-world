@@ -1,8 +1,8 @@
 shader_type spatial;
 render_mode cull_disabled, specular_disabled;
 
-uniform vec4 deep : source_color = vec4(0.27, 0.45, 0.55, 1.0);
-uniform vec4 shallow : source_color = vec4(0.5, 0.72, 0.74, 1.0);
+uniform vec4 deep : source_color = vec4(0.2, 0.2, 0.22, 1.0);
+uniform vec4 shallow : source_color = vec4(0.85, 0.85, 0.86, 1.0);
 uniform vec4 foam : source_color = vec4(0.95, 0.95, 0.9, 1.0);
 
 varying vec3 wpos;
@@ -19,5 +19,5 @@ void fragment() {
 	float lines = smoothstep(0.93, 0.98, s) * smoothstep(0.2, 0.6, sin(wpos.z * 0.9 + TIME));
 	ALBEDO = mix(c, foam.rgb, lines * 0.7);
 	ROUGHNESS = 0.6;
-	ALPHA = 0.85;
+	ALPHA = 0.92;
 }

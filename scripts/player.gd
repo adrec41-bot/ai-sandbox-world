@@ -52,10 +52,10 @@ func _ready() -> void:
 
 
 func _build_body() -> void:
-	var coat: Material = world.toon(Color(0.36, 0.42, 0.5), 0.025)
+	var coat: Material = world.toon(Color(0.3, 0.3, 0.3), 0.025)
 	var dark: Material = world.toon(Color(0.25, 0.22, 0.2), 0.025)
-	var skin: Material = world.toon(Color(0.95, 0.8, 0.68), 0.025)
-	var hat: Material = world.toon(Color(0.5, 0.38, 0.27), 0.025)
+	var skin: Material = world.toon(Color(0.85, 0.84, 0.82), 0.025)
+	var hat: Material = world.toon(Color(0.45, 0.44, 0.42), 0.025)
 	for side in [-0.13, 0.13]:
 		world.add_part(visual, world.box(Vector3(0.18, 0.5, 0.2)), dark, Vector3(side, 0.25, 0))
 	var body := CapsuleMesh.new()
