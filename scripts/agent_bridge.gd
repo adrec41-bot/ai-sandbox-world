@@ -236,7 +236,7 @@ func _world_info(args: Dictionary) -> Dictionary:
 		"inventory": _inventory_summary(),
 		"inventory_size": INVENTORY_SIZE,
 		"max_objects": MAX_OBJECTS,
-		"palette": Style.PALETTE.keys(),
+		"palette": Style.COLORS.keys(),
 		"physics": WorldPhysics.values(),
 		"physics_params": WorldPhysics.describe(),
 	}
