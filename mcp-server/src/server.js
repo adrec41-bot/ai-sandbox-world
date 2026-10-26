@@ -3,11 +3,14 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { checkSpec, objectSpecSchema } from "./spec.js";
 import { availableGenerator, generateSpec } from "./generate.js";
-import { STYLE_GUIDE } from "./style.js";
+import { BUILDER_PROMPT, STYLE_GUIDE } from "./style.js";
 
 const PLAYER_NAME = process.env.PLAYER_NAME || "";
+// Как часто спрашивать игру о новых просьбах, пока агент ждёт.
+const POLL_MS = Number(process.env.POLL_MS) || 1000;
 
 const placement = {
+  request_id: z.string().optional().describe("The request from wait_for_player_request this object answers. It is then placed where the player was looking."),
   x: z.number().optional().describe("World X in meters. Omit x and z to place in front of the player."),
   z: z.number().optional().describe("World Z in meters."),
   distance: z.number().min(2).max(60).optional().describe("Distance in front of the player when x/z are omitted (default 8)."),
@@ -25,9 +28,8 @@ export function createServer(world) {
     { name: "ai-sandbox-world", version: "0.1.0" },
     {
       instructions:
-        "Build in a shared hand-drawn sepia fairy-tale world. Call get_world_info first to see where the player is. " +
-        "Use generate_object with a short prompt; if it says no generator is available, design the spec yourself " +
-        "following the style guide resource (style://guide) and call place_object.",
+        `${BUILDER_PROMPT}\n\nWith this server you may also call generate_object with the request text and request_id ` +
+        "instead of designing the spec yourself; if it says no generator is available, design it yourself and call place_object.",
     },
   );
 
@@ -36,10 +38,7 @@ export function createServer(world) {
     return PLAYER_NAME ? `${PLAYER_NAME} (${client})` : client;
   };
 
-  const spawn = async (spec, prompt, args) => {
-    const placed = await world.request("spawn", { spec, prompt, author: author(), ...args });
-    return placed;
-  };
+  const spawn = (spec, prompt, args) => world.request("spawn", { spec, prompt, author: author(), ...args });
 
   mcp.registerResource(
     "style-guide",
@@ -52,6 +51,72 @@ export function createServer(world) {
     async (uri) => ({
       contents: [{ uri: uri.href, mimeType: "text/markdown", text: `${STYLE_GUIDE}` }],
     }),
+  );
+
+  mcp.registerPrompt(
+    "builder",
+    {
+      title: "Game builder",
+      description: "Work as the game's builder: wait for player requests typed in the game and build them.",
+    },
+    () => ({ messages: [{ role: "user", content: { type: "text", text: BUILDER_PROMPT } }] }),
+  );
+
+  mcp.registerTool(
+    "get_style_guide",
+    {
+      title: "Get style guide",
+      description: "The world's style rules and the JSON object spec accepted by place_object. Read it before designing objects.",
+      inputSchema: {},
+    },
+    async () => text(STYLE_GUIDE),
+  );
+
+  mcp.registerTool(
+    "wait_for_player_request",
+    {
+      title: "Wait for a player request",
+      description:
+        "Wait until a player types a request in the game's input field, then return it with its request_id. " +
+        "Returns 'no new requests' after timeout_seconds; then call it again. Build the request with place_object " +
+        "or generate_object (pass request_id), or answer with reply_to_player.",
+      inputSchema: {
+        timeout_seconds: z.number().min(1).max(300).optional().describe("How long to wait (default 50)."),
+      },
+    },
+    async ({ timeout_seconds = 50 }, extra) => {
+      const deadline = Date.now() + timeout_seconds * 1000;
+      try {
+        while (Date.now() < deadline && !extra?.signal?.aborted) {
+          const request = await world.request("next_request");
+          if (request) return text(request);
+          await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+        }
+        return text("No new requests yet. Call wait_for_player_request again right away.");
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
+    "reply_to_player",
+    {
+      title: "Reply to the player",
+      description: "Show a short message to the player in the game, e.g. when a request is unclear or cannot be built. Write in the player's language.",
+      inputSchema: {
+        text: z.string().min(1).max(500),
+        request_id: z.string().optional().describe("The request you are answering."),
+        done: z.boolean().optional().describe("false if you are still working on the request (default true)."),
+      },
+    },
+    async (args) => {
+      try {
+        return text(await world.request("reply", args));
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
   );
 
   mcp.registerTool(

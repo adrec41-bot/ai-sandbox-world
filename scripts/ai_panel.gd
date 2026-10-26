@@ -1,40 +1,137 @@
 extends Control
-## Панель «ИИ-строитель» (F2 или кнопка вверху экрана). Два способа строить:
-## 1. Любой чат с ИИ: игра копирует промт, игрок вставляет его в ChatGPT,
-##    Claude, Gemini и т. п., а ответ ИИ вставляет обратно в игру.
-## 2. ИИ-агент по MCP: игра копирует готовую настройку подключения для
-##    Claude Code, Cursor, VS Code или Claude Desktop.
+## ИИ-строитель в интерфейсе игры.
+## Внизу экрана поле ввода: игрок пишет «мельница», просьба уходит
+## подключённому ИИ-агенту по MCP, агент строит объект, и он появляется
+## перед игроком. Здесь же видно, что ответил агент.
+## По F2 открывается панель подключения агента: готовые настройки для
+## Claude Code, Cursor, VS Code и Claude Desktop копируются одной кнопкой.
 
 const AiGuide := preload("res://scripts/ai_guide.gd")
+
+## Короткая команда для агента: с неё он начинает слушать просьбы игроков.
+const START_COMMAND := "Use the ai-sandbox-world MCP tools as the game's builder: call get_style_guide, then loop on wait_for_player_request and build each request with place_object. Keep looping until I stop you."
 
 var bridge
 var mcp
 var player
 
-var _panel: PanelContainer
-var _request: LineEdit
-var _answer: TextEdit
+var _field: LineEdit
 var _status: Label
-var _fix: Button
-var _agent_status: Label
-var _last_error := ""
+var _online: Label
+var _status_left := 0.0
+var _panel: PanelContainer
+var _panel_status: Label
 
 
 func _ready() -> void:
 	set_anchors_preset(Control.PRESET_FULL_RECT)
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_build_prompt_bar()
+	_build_setup_panel()
+	bridge.agent_message.connect(_on_agent_message)
 
-	var open := Button.new()
-	open.text = "ИИ-строитель (F2)"
-	open.set_anchors_preset(Control.PRESET_CENTER_TOP)
-	open.offset_left = -90
-	open.offset_right = 90
-	open.offset_top = 16
-	open.offset_bottom = 52
-	open.focus_mode = Control.FOCUS_NONE
-	open.pressed.connect(toggle)
-	add_child(open)
 
+func _process(delta: float) -> void:
+	var online: bool = bridge.agent_online()
+	_online.text = "● ИИ-агент на связи" if online else "○ ИИ-агент не подключён (F2)"
+	_online.modulate.a = 0.9 if online else 0.6
+	if _status_left > 0.0:
+		_status_left -= delta
+		_status.modulate.a = clampf(_status_left, 0.0, 1.0)
+	# Игрок кликнул в мир и захватил мышь: значит, он больше не печатает.
+	if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED and _field.has_focus():
+		_field.release_focus()
+	player.frozen = _field.has_focus() or _panel.visible
+
+
+func _input(event: InputEvent) -> void:
+	if not (event is InputEventKey and event.pressed and not event.echo):
+		return
+	match event.keycode:
+		KEY_F2:
+			_toggle_panel()
+		KEY_ESCAPE:
+			if _panel.visible:
+				_toggle_panel()
+			elif _field.has_focus():
+				_field.release_focus()
+			else:
+				return
+		KEY_ENTER, KEY_KP_ENTER:
+			# Enter в игре открывает поле ввода; отправку делает само поле.
+			if _field.has_focus() or _panel.visible:
+				return
+			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			_field.grab_focus()
+		_:
+			return
+	get_viewport().set_input_as_handled()
+
+
+# --- Поле ввода внизу экрана ----------------------------------------------
+
+func _build_prompt_bar() -> void:
+	var bar := VBoxContainer.new()
+	bar.set_anchors_preset(Control.PRESET_CENTER_BOTTOM)
+	bar.offset_left = -320
+	bar.offset_right = 320
+	bar.offset_top = -132
+	bar.offset_bottom = -44
+	bar.alignment = BoxContainer.ALIGNMENT_END
+	bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	add_child(bar)
+
+	_status = _label("", 16)
+	_status.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bar.add_child(_status)
+
+	_field = LineEdit.new()
+	_field.placeholder_text = "Enter — попросить ИИ построить, например «мельница у реки»"
+	_field.max_length = 500
+	_field.custom_minimum_size = Vector2(0, 38)
+	var bg := StyleBoxFlat.new()
+	bg.bg_color = Color(0.1, 0.09, 0.08, 0.75)
+	bg.border_color = Color(1, 0.98, 0.94, 0.5)
+	bg.set_border_width_all(1)
+	bg.set_corner_radius_all(6)
+	bg.set_content_margin_all(8)
+	_field.add_theme_stylebox_override("normal", bg)
+	_field.add_theme_stylebox_override("focus", bg)
+	_field.text_submitted.connect(_submit)
+	bar.add_child(_field)
+
+	_online = _label("", 13)
+	_online.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	bar.add_child(_online)
+
+
+func _submit(text: String) -> void:
+	text = text.strip_edges()
+	_field.text = ""
+	_field.release_focus()
+	if text == "":
+		return
+	bridge.submit_request(text)
+	if bridge.agent_online():
+		_show("Отправлено ИИ-агенту: «%s»" % text, 0.0)
+	else:
+		_show("ИИ-агент не подключён. Просьба подождёт его, подключить: F2", 8.0)
+
+
+func _on_agent_message(_request_id: String, text: String, done: bool) -> void:
+	_show("ИИ: %s" % text, 8.0 if done else 0.0)
+
+
+## Показывает строку над полем. seconds = 0: держать, пока не придёт новая.
+func _show(text: String, seconds: float) -> void:
+	_status.text = text
+	_status.modulate.a = 1.0
+	_status_left = seconds if seconds > 0.0 else 1000000.0
+
+
+# --- Панель подключения агента (F2) ---------------------------------------
+
+func _build_setup_panel() -> void:
 	_panel = PanelContainer.new()
 	var bg := StyleBoxFlat.new()
 	bg.bg_color = Color(0.1, 0.09, 0.08, 0.94)
@@ -44,137 +141,42 @@ func _ready() -> void:
 	bg.set_content_margin_all(18)
 	_panel.add_theme_stylebox_override("panel", bg)
 	_panel.set_anchors_preset(Control.PRESET_CENTER)
-	_panel.offset_left = -350
-	_panel.offset_right = 350
-	_panel.offset_top = -290
-	_panel.offset_bottom = 290
+	_panel.offset_left = -360
+	_panel.offset_right = 360
+	_panel.offset_top = -270
+	_panel.offset_bottom = 270
 	_panel.visible = false
 	add_child(_panel)
 
-	var root := VBoxContainer.new()
-	root.add_theme_constant_override("separation", 10)
-	_panel.add_child(root)
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	_panel.add_child(box)
 	var top := HBoxContainer.new()
-	root.add_child(top)
-	var title := _label("ИИ-строитель", 22)
+	var title := _label("Подключить ИИ-агента", 22)
 	title.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	top.add_child(title)
-	top.add_child(_button("Закрыть (F2)", toggle))
-
-	var tabs := TabContainer.new()
-	tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	root.add_child(tabs)
-	tabs.add_child(_chat_tab())
-	tabs.add_child(_agent_tab())
-
-
-func _input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_F2 or (event.keycode == KEY_ESCAPE and _panel.visible):
-			toggle()
-			get_viewport().set_input_as_handled()
-
-
-func toggle() -> void:
-	_panel.visible = not _panel.visible
-	# Пока панель открыта, персонаж стоит, а мышь свободна для кнопок.
-	player.frozen = _panel.visible
-	if _panel.visible:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
-		_request.grab_focus()
-
-
-# --- Вкладка «Любой чат с ИИ» ---------------------------------------------
-
-func _chat_tab() -> Control:
-	var box := VBoxContainer.new()
-	box.name = "Любой чат с ИИ"
-	box.add_theme_constant_override("separation", 8)
-
-	box.add_child(_label("1. Напиши, что построить", 16))
-	_request = LineEdit.new()
-	_request.placeholder_text = "например: кривая деревянная мельница с лопастями"
-	box.add_child(_request)
-
-	box.add_child(_label("2. Скопируй промт и вставь его в любой чат с ИИ: ChatGPT, Claude, Gemini, DeepSeek...", 16))
-	box.add_child(_button("Скопировать промт", _copy_prompt))
-
-	box.add_child(_label("3. Скопируй ответ ИИ целиком и вставь сюда", 16))
-	_answer = TextEdit.new()
-	_answer.placeholder_text = "сюда вставляется ответ ИИ (Ctrl+V)"
-	_answer.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	_answer.custom_minimum_size = Vector2(0, 120)
-	box.add_child(_answer)
-
-	var row := HBoxContainer.new()
-	row.add_child(_button("Вставить из буфера", func(): _answer.text = DisplayServer.clipboard_get()))
-	row.add_child(_button("Построить", _build))
-	_fix = _button("Скопировать ошибку для ИИ", _copy_fix)
-	_fix.visible = false
-	row.add_child(_fix)
-	box.add_child(row)
-
-	_status = _label("", 15)
-	box.add_child(_status)
-	return box
-
-
-func _copy_prompt() -> void:
-	var request := _request.text.strip_edges()
-	if request == "":
-		_status.text = "Сначала напиши, что построить."
-		return
-	DisplayServer.clipboard_set(AiGuide.chat_prompt(request))
-	_status.text = "Промт скопирован. Вставь его в чат с ИИ (Ctrl+V) и отправь."
-
-
-func _copy_fix() -> void:
-	DisplayServer.clipboard_set(AiGuide.fix_prompt(_last_error))
-	_status.text = "Скопировано. Вставь в тот же чат, а исправленный ответ снова сюда."
-
-
-func _build() -> void:
-	_fix.visible = false
-	var spec = AiGuide.extract_json(_answer.text)
-	if not spec is Dictionary:
-		_status.text = "Не нашёл описание объекта в ответе. Скопируй ответ ИИ целиком."
-		return
-	var res: Dictionary = bridge.run("spawn", {"spec": spec, "prompt": _request.text.strip_edges(), "author": "чат с ИИ"})
-	if res.ok:
-		_status.text = "Готово: «%s» стоит перед тобой. Закрой панель (F2), чтобы посмотреть." % res.result.name
-		_answer.text = ""
-	else:
-		_last_error = res.error
-		_status.text = "Игра не приняла ответ: %s" % res.error
-		_fix.visible = true
-
-
-# --- Вкладка «ИИ-агент (MCP)» ---------------------------------------------
-
-func _agent_tab() -> Control:
-	var box := VBoxContainer.new()
-	box.name = "ИИ-агент (MCP)"
-	box.add_theme_constant_override("separation", 8)
-
-	box.add_child(_label("Игра сама работает как MCP-сервер, пока она запущена:\n%s\nВыбери свою программу, нажми кнопку и сделай, что написано рядом. Потом просто попроси агента: «построй передо мной мельницу»." % mcp.url(), 15))
+	top.add_child(_button("Закрыть (F2)", _toggle_panel))
+	box.add_child(top)
 
 	var url: String = mcp.url()
+	box.add_child(_label("Это нужно сделать один раз. Потом просто пиши просьбы в поле внизу экрана, а агент будет строить.", 15))
+	box.add_child(_label("1. Нажми кнопку своей программы и вставь скопированное туда, куда написано:", 16))
 	var clients := [
-		["Claude Code", "claude mcp add --transport http ai-sandbox-world %s" % url,
-			"Вставь в терминал и нажми Enter, потом запусти claude."],
+		["Claude Code", "claude mcp add --transport http ai-sandbox-world %s\nclaude --allowedTools \"mcp__ai-sandbox-world\" \"%s\"" % [url, START_COMMAND],
+			"Вставь в терминал (обе строки). Агент сразу начнёт слушать игру, шаг 2 не нужен."],
 		["Cursor", JSON.stringify({"mcpServers": {"ai-sandbox-world": {"url": url}}}, "  "),
-			"Cursor → Settings → MCP → Add new MCP server, вставь в открывшийся файл."],
+			"Settings → MCP → Add new MCP server, вставь в файл и сохрани."],
 		["VS Code", JSON.stringify({"servers": {"ai-sandbox-world": {"type": "http", "url": url}}}, "  "),
 			"Ctrl+Shift+P → «MCP: Open User Configuration», вставь и сохрани."],
 		["Claude Desktop", JSON.stringify({"mcpServers": {"ai-sandbox-world": {"command": "npx", "args": ["-y", "mcp-remote", url]}}}, "  "),
-			"Настройки → Developer → Edit Config, вставь, сохрани и перезапусти. Нужен Node.js с nodejs.org."],
+			"Настройки → Developer → Edit Config, вставь, сохрани, перезапусти. Нужен Node.js."],
 		["Другой агент", url,
-			"Адрес MCP-сервера (Streamable HTTP). Вставь его в настройки MCP своего агента."],
+			"Адрес MCP-сервера игры (Streamable HTTP)."],
 	]
 	for c in clients:
 		var row := HBoxContainer.new()
 		row.add_theme_constant_override("separation", 12)
-		var b := _button(c[0], _copy_snippet.bind(c[0], c[1]))
+		var b := _button(c[0], _copy.bind(c[1], "Скопировано для %s." % c[0]))
 		b.custom_minimum_size = Vector2(150, 0)
 		row.add_child(b)
 		var hint := _label(c[2], 14)
@@ -182,14 +184,23 @@ func _agent_tab() -> Control:
 		row.add_child(hint)
 		box.add_child(row)
 
-	_agent_status = _label("", 15)
-	box.add_child(_agent_status)
-	return box
+	box.add_child(_label("2. Скопируй команду и отправь её агенту в его чат. Разреши ему инструменты ai-sandbox-world без подтверждения («Always allow»), иначе он будет спрашивать на каждый объект.", 16))
+	box.add_child(_button("Скопировать команду для агента", _copy.bind(START_COMMAND, "Команда скопирована. Отправь её агенту.")))
+
+	_panel_status = _label("", 15)
+	box.add_child(_panel_status)
 
 
-func _copy_snippet(client: String, snippet: String) -> void:
-	DisplayServer.clipboard_set(snippet)
-	_agent_status.text = "Скопировано для %s." % client
+func _toggle_panel() -> void:
+	_panel.visible = not _panel.visible
+	if _panel.visible:
+		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+		_panel_status.text = "Сейчас: ИИ-агент на связи." if bridge.agent_online() else "Сейчас: агент не подключён."
+
+
+func _copy(text: String, note: String) -> void:
+	DisplayServer.clipboard_set(text)
+	_panel_status.text = note
 
 
 # --- Мелочи ---------------------------------------------------------------
@@ -200,6 +211,9 @@ func _label(text: String, size: int) -> Label:
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	l.add_theme_font_size_override("font_size", size)
 	l.add_theme_color_override("font_color", Color(1, 0.98, 0.94))
+	l.add_theme_color_override("font_outline_color", Color(0.08, 0.07, 0.06))
+	l.add_theme_constant_override("outline_size", 5)
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	return l
 
 

@@ -12,6 +12,7 @@ import { WorldClient } from "../src/world.js";
 import { extractJson } from "../src/spec.js";
 
 process.env.GENERATOR = "sampling";
+process.env.POLL_MS = "20";
 
 const HUT = {
   name: "Хижина",
@@ -28,6 +29,8 @@ const HUT = {
 let wss;
 let world;
 const objects = [];
+const requests = [];
+const replies = [];
 const samplingRequests = [];
 
 function fakeWorld(port) {
@@ -43,6 +46,11 @@ function fakeWorld(port) {
         return reply(obj);
       }
       if (cmd === "list") return reply(objects);
+      if (cmd === "next_request") return reply(requests.shift() ?? null);
+      if (cmd === "reply") {
+        replies.push(args);
+        return reply({ shown_to_player: args.text });
+      }
       ws.send(JSON.stringify({ id, ok: false, error: `unknown command: ${cmd}` }));
     });
   });
@@ -81,12 +89,17 @@ test("lists tools and the style guide", async () => {
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
     "generate_object",
+    "get_style_guide",
     "get_world_info",
     "list_objects",
     "move_object",
     "place_object",
     "remove_object",
+    "reply_to_player",
+    "wait_for_player_request",
   ]);
+  const { prompts } = await client.listPrompts();
+  assert.equal(prompts[0].name, "builder");
   const place = tools.find((t) => t.name === "place_object");
   assert.ok(place.inputSchema.properties.spec.properties.parts, "spec schema is exposed to agents");
   const guide = await client.readResource({ uri: "style://guide" });
@@ -136,4 +149,16 @@ test("reports when the game is not running", async () => {
 test("extractJson handles fences and prose", () => {
   assert.deepEqual(extractJson('Here:\n```json\n{"a": 1}\n```'), { a: 1 });
   assert.deepEqual(extractJson('{"a": {"b": 2}}'), { a: { b: 2 } });
+});
+
+test("wait_for_player_request returns a request typed in the game", async () => {
+  const client = await connect({ sampling: false });
+  const empty = await client.callTool({ name: "wait_for_player_request", arguments: { timeout_seconds: 1 } });
+  assert.match(empty.content[0].text, /No new requests/);
+  setTimeout(() => requests.push({ request_id: "req_1", text: "мельница" }), 100);
+  const got = await client.callTool({ name: "wait_for_player_request", arguments: { timeout_seconds: 5 } });
+  assert.equal(JSON.parse(got.content[0].text).request_id, "req_1");
+  const res = await client.callTool({ name: "reply_to_player", arguments: { text: "Не понял", request_id: "req_1" } });
+  assert.ok(!res.isError);
+  assert.equal(replies[0].text, "Не понял");
 });

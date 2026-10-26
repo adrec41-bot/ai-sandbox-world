@@ -8,6 +8,9 @@ import { readFileSync } from "node:fs";
 
 export const STYLE_GUIDE = readFileSync(new URL("../../ai/style_guide.md", import.meta.url), "utf8").trim();
 
+// Инструкция для агента-строителя: слушать просьбы из поля ввода в игре и строить.
+export const BUILDER_PROMPT = readFileSync(new URL("../../ai/builder_prompt.md", import.meta.url), "utf8").trim();
+
 export const GENERATION_SYSTEM_PROMPT = `${STYLE_GUIDE}
 
 Answer with the JSON object only, no prose and no code fences.`;

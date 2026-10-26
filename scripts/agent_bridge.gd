@@ -1,5 +1,9 @@
 extends Node
-## Мост между миром и ИИ-агентами. Игра слушает WebSocket на 127.0.0.1:7777,
+## Мост между миром и ИИ-агентами. Здесь же очередь просьб игрока: игрок пишет
+## в поле внизу экрана, подключённый агент забирает просьбу командой
+## next_request, строит объект и отвечает через spawn или reply.
+##
+## Игра слушает WebSocket на 127.0.0.1:7777,
 ## к нему подключается MCP-сервер из папки mcp-server. Каждое сообщение это
 ## JSON {"id", "cmd", "args"}, ответ {"id", "ok", "result" | "error"}.
 ##
@@ -22,6 +26,19 @@ var _objects := {}
 var _next_id := 1
 var _toast: Label
 var _toast_left := 0.0
+## Просьбы игрока: {"id", "text", "status": queued|taken|done, "x", "z", "time"}.
+var _requests: Array[Dictionary] = []
+var _next_request := 1
+var _agent_seen_ms := -1000000
+## Сколько агентов прямо сейчас ждут просьбу (долгий запрос MCP).
+var waiting_agents := 0
+
+## Новости для поля ввода: что ответил агент, построен ли объект.
+signal agent_message(request_id: String, text: String, done: bool)
+
+const AGENT_ONLINE_MS := 90000
+## Если агент взял просьбу и молчит дольше, игрок увидит предупреждение.
+const REQUEST_STALE_MS := 240000
 
 
 func _ready() -> void:
@@ -64,6 +81,11 @@ func _process(delta: float) -> void:
 			WebSocketPeer.STATE_CLOSED:
 				_peers.erase(ws)
 
+	for r in _requests:
+		if r.status == "taken" and Time.get_ticks_msec() - r.time > REQUEST_STALE_MS:
+			r.status = "done"
+			agent_message.emit(r.id, "Агент долго не отвечает. Проверь, что он запущен (F2).", true)
+
 	if _toast_left > 0.0:
 		_toast_left -= delta
 		_toast.modulate.a = clampf(_toast_left, 0.0, 1.0)
@@ -93,7 +115,84 @@ func run(cmd: String, args: Dictionary) -> Dictionary:
 			return _move(args)
 		"remove":
 			return _remove(args)
+		"next_request":
+			return _ok(_take_request())
+		"reply":
+			return _reply(args)
 	return _err("unknown command: %s" % cmd)
+
+
+# --- Просьбы игрока -------------------------------------------------------
+
+## Игрок написал просьбу в поле ввода. Возвращает её id.
+func submit_request(text: String) -> String:
+	var p: Node3D = world.player
+	var spot := _default_position(8.0)
+	var r := {
+		"id": "req_%d" % _next_request,
+		"text": text,
+		"status": "queued",
+		"x": spot.x,
+		"z": spot.y,
+		"time": Time.get_ticks_msec(),
+		"player": [p.position.x, p.position.y, p.position.z],
+	}
+	_next_request += 1
+	_requests.append(r)
+	if _requests.size() > 50:
+		_requests.pop_front()
+	return r.id
+
+
+func has_queued_request() -> bool:
+	for r in _requests:
+		if r.status == "queued":
+			return true
+	return false
+
+
+## Есть ли подключённый агент, который слушает просьбы.
+func agent_online() -> bool:
+	return waiting_agents > 0 or Time.get_ticks_msec() - _agent_seen_ms < AGENT_ONLINE_MS
+
+
+## Отдаёт агенту следующую просьбу или null, если просьб нет.
+func _take_request():
+	_agent_seen_ms = Time.get_ticks_msec()
+	for r in _requests:
+		if r.status == "queued":
+			r.status = "taken"
+			r.time = Time.get_ticks_msec()
+			agent_message.emit(r.id, "Агент строит…", false)
+			return {
+				"request_id": r.id,
+				"text": r.text,
+				"place_at": [r.x, r.z],
+				"player_position": r.player,
+				"how_to_answer": "Design the object and call place_object with this request_id (it is placed in front of the player automatically). If you cannot build it, call reply_to_player with a short answer in the player's language.",
+			}
+	return null
+
+
+func _reply(args: Dictionary) -> Dictionary:
+	var text := str(args.get("text", "")).strip_edges()
+	if text == "":
+		return _err("text is empty")
+	var id := str(args.get("request_id", ""))
+	var done := not (args.get("done") is bool and args.get("done") == false)
+	var r := _find_request(id)
+	if not r.is_empty() and done:
+		r.status = "done"
+	agent_message.emit(id, text, done)
+	_agent_seen_ms = Time.get_ticks_msec()
+	return _ok({"shown_to_player": text})
+
+
+func _find_request(id: String) -> Dictionary:
+	for r in _requests:
+		if r.id == id:
+			return r
+	return {}
 
 
 # --- Команды --------------------------------------------------------------
@@ -135,7 +234,11 @@ func _spawn(args: Dictionary) -> Dictionary:
 	if problem != "":
 		return _err(problem)
 
+	var request := _find_request(str(args.get("request_id", "")))
 	var pos := _default_position(float(args.get("distance", 8.0)))
+	# Объект по просьбе ставится туда, куда игрок смотрел, когда просил.
+	if not request.is_empty():
+		pos = Vector2(request.x, request.z)
 	if args.get("x") is float or args.get("x") is int:
 		pos.x = float(args.x)
 	if args.get("z") is float or args.get("z") is int:
@@ -148,13 +251,18 @@ func _spawn(args: Dictionary) -> Dictionary:
 		"y_offset": clampf(float(args.get("y_offset", 0.0)), -20.0, 60.0),
 		"rotation_y": float(args.get("rotation_y", 0.0)),
 		"author": str(args.get("author", "agent")),
-		"prompt": str(args.get("prompt", "")),
+		"prompt": str(args.get("prompt", "")) if str(args.get("prompt", "")) != "" else str(request.get("text", "")),
 		"created": Time.get_datetime_string_from_system(true),
 	}
 	_next_id += 1
 	_place(record)
 	_save()
-	_notify("%s создаёт: %s" % [record.author, spec.get("name", "объект")])
+	if request.is_empty():
+		_notify("%s создаёт: %s" % [record.author, spec.get("name", "объект")])
+	else:
+		request.status = "done"
+		agent_message.emit(request.id, "Готово: %s" % spec.get("name", "объект"), true)
+	_agent_seen_ms = Time.get_ticks_msec()
 	return _ok(_summary(record))
 
 

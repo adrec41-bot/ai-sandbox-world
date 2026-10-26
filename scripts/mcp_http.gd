@@ -1,9 +1,12 @@
 extends Node
 ## MCP прямо внутри игры: ИИ-агент подключается к http://127.0.0.1:7778/mcp
 ## без отдельного сервера и без Node.js (Streamable HTTP, ответы обычным JSON).
-## Здесь агент сам придумывает форму объекта по руководству стиля и ставит
-## её через place_object. Генерацию по промту силами Claude API даёт
-## отдельный mcp-server.
+##
+## Как агент узнаёт о просьбах игрока: MCP-запросы всегда идут от агента,
+## поэтому агент вызывает wait_for_player_request, а игра держит этот запрос
+## открытым, пока игрок не напишет что-нибудь в поле внизу экрана. Агент сам
+## придумывает форму объекта по руководству стиля и ставит её через
+## place_object, а игрок видит результат без всякого копирования.
 
 const AiGuide := preload("res://scripts/ai_guide.gd")
 
@@ -11,6 +14,10 @@ const PORT := 7778
 ## Сколько ждать полный запрос от клиента, мс.
 const TIMEOUT_MS := 10000
 const MAX_REQUEST := 8 * 1024 * 1024
+## Сколько по умолчанию ждать просьбу игрока, секунд. Меньше типичного
+## таймаута MCP-клиентов, после пустого ответа агент просто спрашивает снова.
+const WAIT_DEFAULT := 50
+const WAIT_MAX := 300
 
 var bridge
 var _server := TCPServer.new()
@@ -40,7 +47,10 @@ func _process(_delta: float) -> void:
 		var peer: StreamPeerTCP = c.peer
 		peer.poll()
 		if peer.get_status() != StreamPeerTCP.STATUS_CONNECTED:
-			_conns.erase(c)
+			_drop(c)
+			continue
+		if c.has("wait"):
+			_poll_wait(c)
 			continue
 		var n := peer.get_available_bytes()
 		if n > 0:
@@ -49,9 +59,33 @@ func _process(_delta: float) -> void:
 				var buf: PackedByteArray = c.buf
 				buf.append_array(got[1])
 				c.buf = buf
-		if _try_handle(c) or Time.get_ticks_msec() - c.since > TIMEOUT_MS or c.buf.size() > MAX_REQUEST:
-			peer.disconnect_from_host()
-			_conns.erase(c)
+		if _try_handle(c):
+			_drop(c)
+		elif not c.has("wait") and (Time.get_ticks_msec() - c.since > TIMEOUT_MS or c.buf.size() > MAX_REQUEST):
+			_drop(c)
+
+
+func _drop(c: Dictionary) -> void:
+	if c.has("wait"):
+		bridge.waiting_agents -= 1
+		c.erase("wait")
+	(c.peer as StreamPeerTCP).disconnect_from_host()
+	_conns.erase(c)
+
+
+## Агент ждёт просьбу: отвечаем, как только игрок что-то написал, или по таймауту.
+func _poll_wait(c: Dictionary) -> void:
+	var timed_out: bool = Time.get_ticks_msec() > c.wait.deadline
+	if not timed_out and not bridge.has_queued_request():
+		return
+	var request = bridge.run("next_request", {}).result
+	var result: Dictionary
+	if request == null:
+		result = _text("No new requests yet. Call wait_for_player_request again right away.", false)
+	else:
+		result = _text(JSON.stringify(request, "  "), false)
+	_send(c.peer, 200, JSON.stringify({"jsonrpc": "2.0", "id": c.wait.id, "result": result}))
+	_drop(c)
 
 
 # --- HTTP -----------------------------------------------------------------
@@ -93,6 +127,13 @@ func _try_handle(c: Dictionary) -> bool:
 	var body := buf.slice(head_end + 4, head_end + 4 + length).get_string_from_utf8()
 	var msg = JSON.parse_string(body)
 	var reply = null
+	if msg is Dictionary and _is_wait(msg):
+		# Ответ придёт позже, когда игрок напишет просьбу (см. _poll_wait).
+		var args: Dictionary = msg.params.get("arguments") if msg.params.get("arguments") is Dictionary else {}
+		var seconds := clampi(int(args.get("timeout_seconds", WAIT_DEFAULT)), 1, WAIT_MAX)
+		c["wait"] = {"id": _json_id(msg.id), "deadline": Time.get_ticks_msec() + seconds * 1000}
+		bridge.waiting_agents += 1
+		return false
 	if msg is Dictionary:
 		reply = _rpc(msg)
 	elif msg is Array:
@@ -110,6 +151,17 @@ func _try_handle(c: Dictionary) -> bool:
 	else:
 		_send(c.peer, 200, JSON.stringify(reply))
 	return true
+
+
+func _is_wait(msg: Dictionary) -> bool:
+	return msg.has("id") and str(msg.get("method", "")) == "tools/call" and msg.get("params") is Dictionary \
+		and str(msg.params.get("name", "")) == "wait_for_player_request"
+
+
+func _json_id(id):
+	if id is float and id == floorf(id):
+		return int(id)
+	return id
 
 
 func _find_head_end(buf: PackedByteArray) -> int:
@@ -136,9 +188,7 @@ func _rpc(msg: Dictionary):
 	# Уведомления (без id) ответа не требуют.
 	if not msg.has("id"):
 		return null
-	var id = msg.id
-	if id is float and id == floorf(id):
-		id = int(id)
+	var id = _json_id(msg.id)
 	var params: Dictionary = msg.get("params") if msg.get("params") is Dictionary else {}
 	var result
 	match str(msg.get("method", "")):
@@ -148,14 +198,18 @@ func _rpc(msg: Dictionary):
 				_client_name = str(info.get("name", "agent"))
 			result = {
 				"protocolVersion": str(params.get("protocolVersion", "2025-06-18")),
-				"capabilities": {"tools": {}},
+				"capabilities": {"tools": {}, "prompts": {}},
 				"serverInfo": {"name": "ai-sandbox-world", "version": "0.2.0"},
-				"instructions": "You are building in a shared game world. Call get_world_info to see where the player is, design objects following the style guide below, and place them with place_object.\n\n" + AiGuide.guide(),
+				"instructions": AiGuide.builder_prompt() + "\n\n" + AiGuide.guide(),
 			}
 		"ping":
 			result = {}
 		"tools/list":
 			result = {"tools": _tools()}
+		"prompts/list":
+			result = {"prompts": [{"name": "builder", "description": "Work as the game's builder: wait for player requests typed in the game and build them."}]}
+		"prompts/get":
+			result = {"messages": [{"role": "user", "content": {"type": "text", "text": AiGuide.builder_prompt()}}]}
 		"tools/call":
 			result = _call_tool(str(params.get("name", "")), params.get("arguments") if params.get("arguments") is Dictionary else {})
 		var other:
@@ -170,8 +224,17 @@ func _call_tool(name: String, args: Dictionary) -> Dictionary:
 			return _text(AiGuide.guide(), false)
 		"get_world_info":
 			res = bridge.run("world_info", {"points": args.get("sample_points")} if args.get("sample_points") is Array else {})
+		"wait_for_player_request":
+			# Сюда попадает только вызов из пакета запросов: отвечаем сразу.
+			var request = bridge.run("next_request", {}).result
+			return _text("No new requests yet. Call wait_for_player_request again." if request == null else JSON.stringify(request, "  "), false)
+		"reply_to_player":
+			res = bridge.run("reply", args)
 		"place_object":
-			var spawn := {"spec": args.get("spec"), "prompt": str(args.get("prompt", "")), "author": _client_name}
+			var spawn := {"spec": args.get("spec"), "author": _client_name}
+			for key in ["prompt", "request_id"]:
+				if args.get(key) is String:
+					spawn[key] = args[key]
 			for key in ["x", "z", "distance", "rotation_y", "y_offset"]:
 				if args.get(key) is float or args.get(key) is int:
 					spawn[key] = args[key]
@@ -202,6 +265,22 @@ func _tools() -> Array:
 			"inputSchema": {"type": "object", "properties": {}},
 		},
 		{
+			"name": "wait_for_player_request",
+			"description": "Wait until a player types a request in the game's input field, then return it with its request_id. Returns 'no new requests' after timeout_seconds; then call it again. Build the request with place_object (pass request_id) or answer with reply_to_player.",
+			"inputSchema": {"type": "object", "properties": {
+				"timeout_seconds": {"type": "number", "description": "How long to wait, 1-300 seconds (default 50)."},
+			}},
+		},
+		{
+			"name": "reply_to_player",
+			"description": "Show a short message to the player in the game, e.g. when a request is unclear or cannot be built. Write in the player's language.",
+			"inputSchema": {"type": "object", "required": ["text"], "properties": {
+				"text": {"type": "string"},
+				"request_id": {"type": "string", "description": "The request you are answering."},
+				"done": {"type": "boolean", "description": "false if you are still working on the request (default true)."},
+			}},
+		},
+		{
 			"name": "get_world_info",
 			"description": "World size, player position and facing, village center, palette, object count. Pass sample_points to get terrain heights at [x, z] points.",
 			"inputSchema": {"type": "object", "properties": {
@@ -210,9 +289,10 @@ func _tools() -> Array:
 		},
 		{
 			"name": "place_object",
-			"description": "Create an object you designed in the world. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names. Omit x and z to place it in front of the player.",
+			"description": "Create an object you designed in the world. Pass request_id when building a player request. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names. Omit x and z to place it in front of the player.",
 			"inputSchema": {"type": "object", "required": ["spec"], "properties": {
 				"spec": {"type": "object", "description": "Object spec: {name, physics: {mode}, parts: [...], effects: [...]}"},
+				"request_id": {"type": "string", "description": "The request from wait_for_player_request this object answers. The object is then placed where the player was looking."},
 				"prompt": {"type": "string", "description": "What the player asked for."},
 				"x": number,
 				"z": number,
