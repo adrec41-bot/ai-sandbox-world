@@ -452,6 +452,8 @@ static func build(root: Node3D, bricks: Array[Dictionary]) -> void:
 			if root is StaticBody3D:
 				var shape := ConcavePolygonShape3D.new()
 				shape.set_faces(faces)
+				# Прицел и камера должны видеть стены с любой стороны.
+				shape.backface_collision = true
 				var cs := CollisionShape3D.new()
 				cs.shape = shape
 				if id != "":

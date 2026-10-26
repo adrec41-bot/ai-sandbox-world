@@ -7,10 +7,15 @@ const Style := preload("res://scripts/style.gd")
 const Bricks := preload("res://scripts/bricks.gd")
 const PlayerScript := preload("res://scripts/player.gd")
 const PetScript := preload("res://scripts/pet.gd")
-const HudScript := preload("res://scripts/hud.gd")
 const AgentBridge := preload("res://scripts/agent_bridge.gd")
 const McpHttp := preload("res://scripts/mcp_http.gd")
-const AiPanel := preload("res://scripts/ai_panel.gd")
+const Worlds := preload("res://scripts/worlds.gd")
+const GameUi := preload("res://scripts/ui/game_ui.gd")
+const WorldSelect := preload("res://scripts/ui/world_select.gd")
+const Thumbnails := preload("res://scripts/ui/thumbnails.gd")
+const BuildMode := preload("res://scripts/build_mode.gd")
+const Effects := preload("res://scripts/effects.gd")
+const Sfx := preload("res://scripts/sfx.gd")
 const BASEPLATE := preload("res://shaders/baseplate.gdshader")
 
 ## Сторона мира в шипах и в метрах.
@@ -27,46 +32,123 @@ const STUD_CARPET := 72
 
 var player: CharacterBody3D
 var bridge: Node
+var build: Node
+var ui: Control
+var _sun: DirectionalLight3D
+var _menu_cam: Camera3D
 var animated: Array[Callable] = []
 var _carpet: MultiMeshInstance3D
 var _clouds: Array[Node3D] = []
 
 
 func _ready() -> void:
+	# --world=<id> открывает мир сразу (создаёт, если его нет): для тестов и скриншотов.
+	for arg in OS.get_cmdline_user_args():
+		if arg.begins_with("--world="):
+			var id := arg.trim_prefix("--world=")
+			if not FileAccess.file_exists(Worlds.world_path(id)):
+				id = Worlds.create(id, 256, "green")
+			Worlds.current = id
+	if Worlds.current != "" and not FileAccess.file_exists(Worlds.world_path(Worlds.current)):
+		Worlds.current = ""
+	if Worlds.current == "":
+		_open_world_select()
+		return
+	var meta := Worlds.meta(Worlds.current)
+	studs = int(meta.get("studs", 256))
+	plate_color = str(meta.get("plate_color", "green"))
+	Worlds.backup(Worlds.current)
+	var settings := Worlds.load_settings()
+	settings["last_world"] = Worlds.current
+	Worlds.save_settings(settings)
+
 	SIZE = studs * Style.STUD
 	_setup_environment()
 	_build_ground()
 	_build_clouds()
 	_spawn_player()
-	var hud: Control = HudScript.new()
-	hud.player = player
-	hud.world = self
-	var layer := CanvasLayer.new()
-	layer.add_child(hud)
-	add_child(layer)
+	player.set_look(settings.get("look", {}))
+	var sfx: Node = Sfx.new()
+	sfx.name = "Sfx"
+	add_child(sfx)
 	# Через мост ИИ-агенты по MCP создают объекты, они попадают в инвентарь.
 	bridge = AgentBridge.new()
 	bridge.name = "AgentBridge"
 	bridge.world = self
+	bridge.world_id = Worlds.current
+	var fx: Node = Effects.new()
+	fx.name = "Effects"
+	fx.world = self
+	fx.bridge = bridge
+	fx.sfx = sfx
 	add_child(bridge)
+	add_child(fx)
 	var mcp: Node = McpHttp.new()
 	mcp.name = "McpHttp"
 	mcp.bridge = bridge
 	add_child(mcp)
-	var panel: Control = AiPanel.new()
-	panel.bridge = bridge
-	panel.mcp = mcp
-	panel.player = player
-	layer.add_child(panel)
+	var thumbs: Node = Thumbnails.new()
+	thumbs.name = "Thumbnails"
+	add_child(thumbs)
+	build = BuildMode.new()
+	build.name = "BuildMode"
+	build.world = self
+	build.bridge = bridge
+	build.player = player
+	build.sfx = sfx
+
+	ui = GameUi.new()
+	ui.world = self
+	ui.bridge = bridge
+	ui.mcp = mcp
+	ui.player = player
+	ui.build = build
+	ui.thumbs = thumbs
+	ui.sfx = sfx
+	ui.settings = settings
+	build.ui = ui
+	add_child(build)
+	var layer := CanvasLayer.new()
+	layer.add_child(ui)
+	add_child(layer)
+	ui.apply_settings()
+	Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
+
+
+## Список миров поверх пустой пластины, камера медленно облетает её.
+func _open_world_select() -> void:
+	SIZE = studs * Style.STUD
+	_setup_environment()
+	_build_ground()
+	_build_clouds()
+	_menu_cam = Camera3D.new()
+	_menu_cam.fov = 50.0
+	_menu_cam.far = 1200.0
+	add_child(_menu_cam)
+	_menu_cam.current = true
+	var layer := CanvasLayer.new()
+	layer.add_child(WorldSelect.new())
+	add_child(layer)
+
+
+## Тени и объёмные шипы можно выключить в настройках ради скорости.
+func set_graphics(shadows: bool, stud_detail: bool) -> void:
+	if _sun:
+		_sun.shadow_enabled = shadows
+	if _carpet:
+		_carpet.visible = stud_detail
 
 
 func _process(delta: float) -> void:
 	for f in animated:
 		f.call(delta)
 	# Объёмные шипы лежат ковром вокруг игрока и переезжают вместе с ним.
-	if _carpet and player:
+	if _menu_cam:
+		var t := Time.get_ticks_msec() * 0.00004
+		_menu_cam.look_at_from_position(Vector3(cos(t) * 22.0, 9.0, sin(t) * 22.0), Vector3(0, 1.5, 0))
+	if _carpet:
 		var cam := get_viewport().get_camera_3d()
-		var focus: Vector3 = cam.global_position if cam else player.global_position
+		var focus: Vector3 = cam.global_position if cam else Vector3.ZERO
 		_carpet.position = Vector3(snappedf(focus.x, Style.STUD * 4.0), 0.0, snappedf(focus.z, Style.STUD * 4.0))
 	for c in _clouds:
 		c.position.x += delta * 0.6
@@ -179,6 +261,7 @@ func _setup_environment() -> void:
 	sun.shadow_blur = 1.5
 	sun.directional_shadow_max_distance = 90.0
 	add_child(sun)
+	_sun = sun
 
 
 func _spawn_player() -> void:

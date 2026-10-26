@@ -34,8 +34,11 @@ var head: Node3D
 var look := {}
 var walk_time := 0.0
 var spawn: Vector3
-## Пока открыта панель ИИ, клавиши не двигают персонажа.
+## Пока открыто окно или игрок печатает, клавиши не двигают персонажа.
 var frozen := false
+## Настройки мыши из меню.
+var mouse_scale := 1.0
+var invert_y := false
 ## Транспорт, на котором едет игрок, и надетое снаряжение.
 var riding: Node3D = null
 var worn: Node3D = null
@@ -105,19 +108,20 @@ func set_look(new_look: Dictionary) -> void:
 
 func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
+		# В режиме строительства колесо поднимает деталь, камеру двигает Ctrl+колесо.
+		var building: bool = world.build != null and world.build.active
+		if (building and not event.ctrl_pressed) or event.shift_pressed:
+			return
 		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
 			arm.spring_length = maxf(arm.spring_length - 0.5, 2.0)
 		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
-			arm.spring_length = minf(arm.spring_length + 0.5, 14.0)
-		else:
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED
-	elif event is InputEventKey and event.pressed and event.keycode == KEY_ESCAPE:
-		Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
+			arm.spring_length = minf(arm.spring_length + 0.5, 20.0)
 	elif event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_E and not frozen:
 		interact()
 	elif event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		yaw -= event.relative.x * MOUSE_SENS
-		pitch = clampf(pitch - event.relative.y * MOUSE_SENS, -1.2, 0.6)
+		var sens := MOUSE_SENS * mouse_scale
+		yaw -= event.relative.x * sens
+		pitch = clampf(pitch - event.relative.y * sens * (-1.0 if invert_y else 1.0), -1.2, 0.6)
 
 
 func _key(a: Key, b: Key) -> float:

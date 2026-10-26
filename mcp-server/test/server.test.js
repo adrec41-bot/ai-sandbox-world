@@ -33,6 +33,7 @@ const requests = [];
 const replies = [];
 const samplingRequests = [];
 const physicsChanges = [];
+const worldCalls = [];
 
 const BICYCLE = {
   name: "Велосипед",
@@ -69,6 +70,10 @@ function fakeWorld(port) {
         return reply({ gravity: args.gravity ?? 1, player_speed: 1, jump: 1, time_scale: 1 });
       }
       if (cmd === "next_request") return reply(requests.shift() ?? null);
+      if (["update", "ask", "progress", "get_spec", "area"].includes(cmd)) {
+        worldCalls.push({ cmd, args });
+        return reply({ cmd, ok: true });
+      }
       if (cmd === "reply") {
         replies.push(args);
         return reply({ shown_to_player: args.text });
@@ -110,15 +115,20 @@ test("lists tools and the style guide", async () => {
   const client = await connect({ sampling: false });
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
+    "ask_player",
     "create_object",
     "generate_object",
+    "get_area",
+    "get_object_spec",
     "get_style_guide",
     "get_world_info",
     "list_objects",
     "move_object",
     "remove_object",
     "reply_to_player",
+    "report_progress",
     "set_world_physics",
+    "update_object",
     "wait_for_player_request",
   ]);
   const { prompts } = await client.listPrompts();
@@ -250,4 +260,20 @@ test("the guide explains mechanics", async () => {
   const client = await connect({ sampling: false });
   const guide = await client.callTool({ name: "get_style_guide", arguments: {} });
   assert.match(guide.content[0].text, /"type": "vehicle"/);
+});
+
+
+test("update_object, ask_player and report_progress reach the game", async () => {
+  const client = await connect({ sampling: false });
+  const noTarget = await client.callTool({ name: "update_object", arguments: { spec: HUT } });
+  assert.equal(noTarget.isError, true);
+  const upd = await client.callTool({ name: "update_object", arguments: { spec: HUT, object_id: "obj_1", request_id: "req_2" } });
+  assert.ok(!upd.isError, upd.content[0].text);
+  await client.callTool({ name: "ask_player", arguments: { request_id: "req_3", question: "Какой цвет?", options: ["Красный", "Синий"] } });
+  await client.callTool({ name: "report_progress", arguments: { request_id: "req_3", text: "Строю стены" } });
+  await client.callTool({ name: "get_object_spec", arguments: { item_id: "item_1" } });
+  await client.callTool({ name: "get_area", arguments: {} });
+  assert.deepEqual(worldCalls.map((c) => c.cmd), ["update", "ask", "progress", "get_spec", "area"]);
+  assert.equal(worldCalls[0].args.object_id, "obj_1");
+  assert.deepEqual(worldCalls[1].args.options, ["Красный", "Синий"]);
 });

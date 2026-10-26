@@ -22,6 +22,8 @@ static var jump := 1.0
 static var time_scale := 1.0
 
 var world: Node3D
+## У каждого мира своя физика: файл задаёт мост мира.
+var save_path := SAVE_PATH
 
 
 func _ready() -> void:
@@ -73,15 +75,18 @@ func _apply() -> void:
 
 
 func _save() -> void:
-	var f := FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	var f := FileAccess.open(save_path, FileAccess.WRITE)
 	if f:
 		f.store_string(JSON.stringify(values()))
 
 
 func _load() -> void:
-	if not FileAccess.file_exists(SAVE_PATH):
+	# Значения статические: после другого мира сначала возвращаем обычные.
+	for key in PARAMS:
+		_assign(key, PARAMS[key][0])
+	if not FileAccess.file_exists(save_path):
 		return
-	var data = JSON.parse_string(FileAccess.get_file_as_string(SAVE_PATH))
+	var data = JSON.parse_string(FileAccess.get_file_as_string(save_path))
 	if data is Dictionary:
 		for key in PARAMS:
 			var v = data.get(key)

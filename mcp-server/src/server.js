@@ -1,7 +1,7 @@
 // Инструменты MCP: что ИИ-агент может делать с миром.
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { checkSpec, objectSpecSchema } from "./spec.js";
+import { CATEGORIES, checkSpec, objectSpecSchema } from "./spec.js";
 import { availableGenerator, generateSpec } from "./generate.js";
 import { BUILDER_PROMPT, STYLE_GUIDE } from "./style.js";
 
@@ -73,9 +73,10 @@ export function createServer(world) {
     {
       title: "Wait for a player request",
       description:
-        "Wait until a player types a request in the game's input field, then return it with its request_id. " +
-        "Returns 'no new requests' after timeout_seconds; then call it again. Build the request with create_object " +
-        "or generate_object (pass request_id), or answer with reply_to_player.",
+        "Wait until the player types a request in the game, then return it with its request_id, kind, size, " +
+        "marked area and edit_target or edit_item. Also returns the player's answers to ask_player (type 'answer'). " +
+        "Returns 'no new requests' after timeout_seconds; then call it again. Build with create_object, update_object " +
+        "or generate_object (pass request_id), ask with ask_player, or answer with reply_to_player.",
       inputSchema: {
         timeout_seconds: z.number().min(1).max(300).optional().describe("How long to wait (default 50)."),
       },
@@ -120,8 +121,8 @@ export function createServer(world) {
     {
       title: "Get world info",
       description:
-        "World size, player position and facing, village center, palette, object count. " +
-        "Pass sample_points to get terrain heights at [x, z] points.",
+        "World size in studs and meters, player position and facing, the area the player marked, LEGO colors, " +
+        "object count and physics. Pass sample_points to get ground heights at [x, z] points.",
       inputSchema: {
         sample_points: z.array(z.tuple([z.number(), z.number()])).max(64).optional(),
       },
@@ -176,15 +177,17 @@ export function createServer(world) {
     {
       title: "Create an object from a spec",
       description:
-        "Create an object you designed yourself and put it into the player's inventory; the player places it in the world. " +
-        "Pass request_id when building a player request. Read get_style_guide first: " +
-        "parts are boxes, prisms, spheres, cylinders, cones, capsules, tori, lathes and extrusions in meters, " +
-        "y = 0 is the ground, colors are palette names. The game renders everything with the world's shader and palette. " +
-        "Add spec.mechanics to make it rideable (vehicle: bicycle, car, plane, helicopter), wearable (equipment: jetpack, " +
-        "wings, boots) or interactive (prop: trampoline, door, carousel), as described in the guide.",
+        "Create an object you designed from LEGO bricks and put it into the player's inventory. " +
+        "Pass request_id when building a player request. If the request has an area (a footprint the player marked), " +
+        "the object is placed right there; pass place: true to place it in front of the player otherwise. " +
+        "Read get_style_guide first: bricks (brick, plate, tile, slope, round, cone with at/size in studs and plates) " +
+        "and the box, wall, roof and tower commands; parts only for shapes bricks cannot make. " +
+        "Add spec.mechanics to make it rideable (vehicle), wearable (equipment) or interactive (prop), as described in the guide.",
       inputSchema: {
         spec: objectSpecSchema,
         prompt: z.string().max(2000).optional().describe("The original request, stored with the object."),
+        category: z.enum(CATEGORIES).optional().describe("Inventory category."),
+        place: z.boolean().optional().describe("Also place it in the world (on the marked area, or in front of the player)."),
         ...requestArgs,
       },
     },
@@ -200,11 +203,116 @@ export function createServer(world) {
   );
 
   mcp.registerTool(
+    "update_object",
+    {
+      title: "Change an object",
+      description:
+        "Change an existing object: a placed object (object_id, from edit_target or list_objects) or an inventory item " +
+        "(item_id, from edit_item). Read it first with get_object_spec, then send the whole changed spec. " +
+        "The player can undo the change with Ctrl+Z.",
+      inputSchema: {
+        spec: objectSpecSchema,
+        object_id: z.string().optional(),
+        item_id: z.string().optional(),
+        ...requestArgs,
+      },
+    },
+    async ({ spec, ...args }) => {
+      const checked = checkSpec(spec);
+      if (checked.error) return failure(checked.error);
+      if (!args.object_id && !args.item_id) return failure("Pass object_id or item_id.");
+      try {
+        return text(await world.request("update", { spec: checked.spec, ...args }));
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
+    "get_object_spec",
+    {
+      title: "Get an object's spec",
+      description: "The full spec of a placed object (object_id) or an inventory item (item_id), to change it with update_object.",
+      inputSchema: { object_id: z.string().optional(), item_id: z.string().optional() },
+    },
+    async (args) => {
+      try {
+        return text(await world.request("get_spec", args));
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
+    "ask_player",
+    {
+      title: "Ask the player",
+      description:
+        "Ask the player a short question about a request when it is really unclear (style, size, which variant). " +
+        "Give 2-4 options as buttons; the player can also type an answer. The answer comes from wait_for_player_request " +
+        "as type 'answer' with the same request_id. Write in the player's language.",
+      inputSchema: {
+        request_id: z.string(),
+        question: z.string().min(1).max(300),
+        options: z.array(z.string().max(60)).max(4).optional(),
+      },
+    },
+    async (args) => {
+      try {
+        return text(await world.request("ask", args));
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
+    "report_progress",
+    {
+      title: "Report progress",
+      description:
+        "Show what you are doing on the request card in the game, e.g. 'Building the walls'. " +
+        "Use it for big builds that take a while. Write in the player's language.",
+      inputSchema: { request_id: z.string(), text: z.string().min(1).max(120) },
+    },
+    async (args) => {
+      try {
+        return text(await world.request("progress", args));
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
+    "get_area",
+    {
+      title: "What stands on an area",
+      description:
+        "Objects standing on a rectangle, with their top heights, so you do not build on top of them. " +
+        "Without arguments it checks the area the player marked; or pass from and to as [x, z] in meters.",
+      inputSchema: {
+        from: z.tuple([z.number(), z.number()]).optional(),
+        to: z.tuple([z.number(), z.number()]).optional(),
+      },
+    },
+    async (args) => {
+      try {
+        return text(await world.request("area", args));
+      } catch (err) {
+        return failure(err.message);
+      }
+    },
+  );
+
+  mcp.registerTool(
     "set_world_physics",
     {
       title: "Set world physics",
       description:
-        "Change the physics of the whole shared world for everyone: gravity (1 normal, 0.16 moon, 0 weightless), " +
+        "Change the physics of the player's world: gravity (1 normal, 0.16 moon, 0 weightless), " +
         "player speed, jump height and time scale (below 1 is slow motion). Omitted values stay as they are; " +
         "reset: true restores the defaults. Returns the current values.",
       inputSchema: {
@@ -228,7 +336,7 @@ export function createServer(world) {
     "list_objects",
     {
       title: "List agent-made objects",
-      description: "Objects the players have placed in the world: id, name, author, prompt, position.",
+      description: "Objects placed in the world: id, name, author, prompt, position, brick count.",
       inputSchema: {},
     },
     async () => {
