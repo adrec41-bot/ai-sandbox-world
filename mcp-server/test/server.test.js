@@ -126,7 +126,7 @@ test("lists tools and the style guide", async () => {
   const place = tools.find((t) => t.name === "create_object");
   assert.ok(place.inputSchema.properties.spec.properties.parts, "spec schema is exposed to agents");
   const guide = await client.readResource({ uri: "style://guide" });
-  assert.match(guide.contents[0].text, /Disney/);
+  assert.match(guide.contents[0].text, /LEGO/);
 });
 
 test("create_object validates and adds to the inventory", async () => {
@@ -136,6 +136,31 @@ test("create_object validates and adds to the inventory", async () => {
   const ok = await client.callTool({ name: "create_object", arguments: { spec: HUT, prompt: "хижина", request_id: "req_9" } });
   assert.ok(!ok.isError, ok.content[0].text);
   assert.equal(JSON.parse(ok.content[0].text).created.author, "test-agent");
+});
+
+test("create_object accepts bricks and brick commands", async () => {
+  const client = await connect({ sampling: false });
+  const house = {
+    name: "Домик",
+    category: "buildings",
+    bricks: [
+      { type: "plate", at: [-4, 0, -4], size: [8, 8], color: "light_gray" },
+      { type: "wall", from: [-4, -4], to: [4, -4], y: 1, height: 12, color: "red", openings: [{ at: 3, width: 2, height: 9 }] },
+      { type: "roof", from: [-5, -5], to: [5, 5], y: 13, color: "dark_gray" },
+      { type: "slope", at: [0, 0, 6], size: [2, 2], dir: "-x", color: "blue", id: "door" },
+    ],
+    mechanics: { type: "prop", interact: "toggle", animations: [{ part: "door", motion: "angle", axis: "y", amount: 90, by: "active" }] },
+  };
+  const ok = await client.callTool({ name: "create_object", arguments: { spec: house } });
+  assert.ok(!ok.isError, ok.content[0].text);
+  const diagonal = await client.callTool({
+    name: "create_object",
+    arguments: { spec: { name: "x", bricks: [{ type: "wall", from: [0, 0], to: [4, 4] }] } },
+  });
+  assert.equal(diagonal.isError, true);
+  assert.match(diagonal.content[0].text, /along x or along z/);
+  const empty = await client.callTool({ name: "create_object", arguments: { spec: { name: "x" } } });
+  assert.equal(empty.isError, true);
 });
 
 test("generate_object without a generator explains the fallback", async () => {
@@ -153,9 +178,9 @@ test("generate_object uses sampling with the hidden style prompt and retries", a
   assert.equal(body.generator, "sampling");
   assert.equal(body.created.prompt, "хижина лесника");
   assert.equal(samplingRequests.length, 2);
-  assert.match(samplingRequests[0].systemPrompt, /hand-painted 1930s Disney/);
+  assert.match(samplingRequests[0].systemPrompt, /LEGO-style/);
   const list = await client.callTool({ name: "list_objects", arguments: {} });
-  assert.equal(JSON.parse(list.content[0].text).length, 2);
+  assert.equal(JSON.parse(list.content[0].text).at(-1).prompt, "хижина лесника");
 });
 
 test("reports when the game is not running", async () => {
