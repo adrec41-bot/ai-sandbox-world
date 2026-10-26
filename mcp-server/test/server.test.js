@@ -33,6 +33,7 @@ const requests = [];
 const replies = [];
 const samplingRequests = [];
 const physicsChanges = [];
+const worldCalls = [];
 
 const BICYCLE = {
   name: "Велосипед",
@@ -69,6 +70,10 @@ function fakeWorld(port) {
         return reply({ gravity: args.gravity ?? 1, player_speed: 1, jump: 1, time_scale: 1 });
       }
       if (cmd === "next_request") return reply(requests.shift() ?? null);
+      if (["update", "ask", "progress", "get_spec", "area"].includes(cmd)) {
+        worldCalls.push({ cmd, args });
+        return reply({ cmd, ok: true });
+      }
       if (cmd === "reply") {
         replies.push(args);
         return reply({ shown_to_player: args.text });
@@ -110,15 +115,20 @@ test("lists tools and the style guide", async () => {
   const client = await connect({ sampling: false });
   const { tools } = await client.listTools();
   assert.deepEqual(tools.map((t) => t.name).sort(), [
+    "ask_player",
     "create_object",
     "generate_object",
+    "get_area",
+    "get_object_spec",
     "get_style_guide",
     "get_world_info",
     "list_objects",
     "move_object",
     "remove_object",
     "reply_to_player",
+    "report_progress",
     "set_world_physics",
+    "update_object",
     "wait_for_player_request",
   ]);
   const { prompts } = await client.listPrompts();
@@ -126,7 +136,7 @@ test("lists tools and the style guide", async () => {
   const place = tools.find((t) => t.name === "create_object");
   assert.ok(place.inputSchema.properties.spec.properties.parts, "spec schema is exposed to agents");
   const guide = await client.readResource({ uri: "style://guide" });
-  assert.match(guide.contents[0].text, /Disney/);
+  assert.match(guide.contents[0].text, /LEGO/);
 });
 
 test("create_object validates and adds to the inventory", async () => {
@@ -136,6 +146,31 @@ test("create_object validates and adds to the inventory", async () => {
   const ok = await client.callTool({ name: "create_object", arguments: { spec: HUT, prompt: "хижина", request_id: "req_9" } });
   assert.ok(!ok.isError, ok.content[0].text);
   assert.equal(JSON.parse(ok.content[0].text).created.author, "test-agent");
+});
+
+test("create_object accepts bricks and brick commands", async () => {
+  const client = await connect({ sampling: false });
+  const house = {
+    name: "Домик",
+    category: "buildings",
+    bricks: [
+      { type: "plate", at: [-4, 0, -4], size: [8, 8], color: "light_gray" },
+      { type: "wall", from: [-4, -4], to: [4, -4], y: 1, height: 12, color: "red", openings: [{ at: 3, width: 2, height: 9 }] },
+      { type: "roof", from: [-5, -5], to: [5, 5], y: 13, color: "dark_gray" },
+      { type: "slope", at: [0, 0, 6], size: [2, 2], dir: "-x", color: "blue", id: "door" },
+    ],
+    mechanics: { type: "prop", interact: "toggle", animations: [{ part: "door", motion: "angle", axis: "y", amount: 90, by: "active" }] },
+  };
+  const ok = await client.callTool({ name: "create_object", arguments: { spec: house } });
+  assert.ok(!ok.isError, ok.content[0].text);
+  const diagonal = await client.callTool({
+    name: "create_object",
+    arguments: { spec: { name: "x", bricks: [{ type: "wall", from: [0, 0], to: [4, 4] }] } },
+  });
+  assert.equal(diagonal.isError, true);
+  assert.match(diagonal.content[0].text, /along x or along z/);
+  const empty = await client.callTool({ name: "create_object", arguments: { spec: { name: "x" } } });
+  assert.equal(empty.isError, true);
 });
 
 test("generate_object without a generator explains the fallback", async () => {
@@ -153,9 +188,9 @@ test("generate_object uses sampling with the hidden style prompt and retries", a
   assert.equal(body.generator, "sampling");
   assert.equal(body.created.prompt, "хижина лесника");
   assert.equal(samplingRequests.length, 2);
-  assert.match(samplingRequests[0].systemPrompt, /hand-painted 1930s Disney/);
+  assert.match(samplingRequests[0].systemPrompt, /LEGO-style/);
   const list = await client.callTool({ name: "list_objects", arguments: {} });
-  assert.equal(JSON.parse(list.content[0].text).length, 2);
+  assert.equal(JSON.parse(list.content[0].text).at(-1).prompt, "хижина лесника");
 });
 
 test("reports when the game is not running", async () => {
@@ -225,4 +260,20 @@ test("the guide explains mechanics", async () => {
   const client = await connect({ sampling: false });
   const guide = await client.callTool({ name: "get_style_guide", arguments: {} });
   assert.match(guide.content[0].text, /"type": "vehicle"/);
+});
+
+
+test("update_object, ask_player and report_progress reach the game", async () => {
+  const client = await connect({ sampling: false });
+  const noTarget = await client.callTool({ name: "update_object", arguments: { spec: HUT } });
+  assert.equal(noTarget.isError, true);
+  const upd = await client.callTool({ name: "update_object", arguments: { spec: HUT, object_id: "obj_1", request_id: "req_2" } });
+  assert.ok(!upd.isError, upd.content[0].text);
+  await client.callTool({ name: "ask_player", arguments: { request_id: "req_3", question: "Какой цвет?", options: ["Красный", "Синий"] } });
+  await client.callTool({ name: "report_progress", arguments: { request_id: "req_3", text: "Строю стены" } });
+  await client.callTool({ name: "get_object_spec", arguments: { item_id: "item_1" } });
+  await client.callTool({ name: "get_area", arguments: {} });
+  assert.deepEqual(worldCalls.map((c) => c.cmd), ["update", "ask", "progress", "get_spec", "area"]);
+  assert.equal(worldCalls[0].args.object_id, "obj_1");
+  assert.deepEqual(worldCalls[1].args.options, ["Красный", "Синий"]);
 });

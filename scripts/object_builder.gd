@@ -1,23 +1,28 @@
 extends RefCounted
 ## Строит объект мира из описания, которое прислал ИИ-агент через MCP.
-## Описание задаёт геометрию свободно (примитивы, тела вращения, выдавленные
-## контуры), а материалы всегда берутся из Style: цвета приводятся к палитре,
-## поэтому любой сгенерированный объект выглядит частью мира.
+## Основа описания это кирпичи Lego на сетке шипов (spec.bricks, см.
+## scripts/bricks.gd). Для того, что из кирпичей не собрать (колёса, купола,
+## пропеллеры), есть свободные детали spec.parts: примитивы, тела вращения,
+## выдавленные контуры. Материал у всего один, глянцевый пластик, а цвета
+## приводятся к палитре Lego, поэтому любой объект выглядит частью мира.
 ##
-## Формат описания (подробно в mcp-server/README.md):
+## Формат описания (подробно в ai/style_guide.md):
 ## {
 ##   "name": "Мельница",
+##   "category": "buildings",
 ##   "physics": {"mode": "static" | "rigid" | "none", "mass": 50},
-##   "parts": [{"shape": "box", "size": [2, 3, 2], "position": [0, 1.5, 0],
-##              "rotation": [0, 45, 0], "color": "wall"}, ...],
+##   "bricks": [{"type": "brick", "at": [0, 0, 0], "size": [2, 4], "color": "red"}, ...],
+##   "parts": [{"shape": "cylinder", "radius": 0.5, "height": 0.4, "position": [0, 1, 0],
+##              "rotation": [0, 0, 90], "color": "black"}, ...],
 ##   "effects": [{"type": "smoke" | "light", "position": [0, 4, 0]}],
 ##   "mechanics": {"type": "vehicle" | "equipment" | "prop", ...}
 ## }
-## Ноль по Y это уровень земли под объектом, единицы в метрах, углы в градусах.
+## Ноль по Y это уровень земли под объектом, у деталей единицы в метрах, углы в градусах.
 ## Механики (транспорт, снаряжение, анимации) описаны в scripts/mechanics/mechanics.gd.
 
 const Style := preload("res://scripts/style.gd")
 const Mechanics := preload("res://scripts/mechanics/mechanics.gd")
+const Bricks := preload("res://scripts/bricks.gd")
 
 const MAX_PARTS := 256
 const MAX_EFFECTS := 16
@@ -51,6 +56,7 @@ static func build(spec: Dictionary) -> Node3D:
 	for i in mini(effects.size(), MAX_EFFECTS):
 		if effects[i] is Dictionary:
 			_add_effect(root, effects[i])
+	Bricks.build(root, Bricks.expand(spec.get("bricks")))
 	Mechanics.setup(root, spec)
 	return root
 
@@ -59,9 +65,15 @@ static func build(spec: Dictionary) -> Node3D:
 static func validate(spec) -> String:
 	if not spec is Dictionary:
 		return "spec must be an object"
-	var parts = spec.get("parts")
-	if not parts is Array or parts.is_empty():
-		return "spec.parts must be a non-empty array"
+	var parts = spec.get("parts", [])
+	var bricks = spec.get("bricks", [])
+	if not parts is Array:
+		return "spec.parts must be an array"
+	if (not bricks is Array or bricks.is_empty()) and parts.is_empty():
+		return "spec needs bricks (or parts for shapes that bricks cannot make)"
+	var brick_problem := Bricks.validate(bricks)
+	if brick_problem != "":
+		return brick_problem
 	if parts.size() > MAX_PARTS:
 		return "too many parts (max %d)" % MAX_PARTS
 	for i in parts.size():
@@ -101,15 +113,39 @@ static func _add_part(root: Node3D, p: Dictionary) -> void:
 		if part_id != "":
 			col.set_meta("part_id", part_id)
 		root.add_child(col)
+	_add_box_studs(mi, p, xf)
+
+
+## Коробке без наклона сама добавляет шипы сверху, как у кирпича.
+static func _add_box_studs(mi: MeshInstance3D, p: Dictionary, xf: Transform3D) -> void:
+	if str(p.get("shape", "")) != "box" or p.get("studs") == false or str(p.get("material", "")) == "glow":
+		return
+	var rot := _vec(p.get("rotation"), Vector3.ZERO)
+	if absf(rot.x) > 0.5 or absf(rot.z) > 0.5:
+		return
+	var size := _size(p) * _vec(p.get("scale"), Vector3.ONE).abs()
+	var nx := int(floor(size.x / Style.STUD + 0.2))
+	var nz := int(floor(size.z / Style.STUD + 0.2))
+	if nx < 1 or nz < 1 or nx * nz > 400:
+		return
+	var parts := []
+	for iz in nz:
+		for ix in nx:
+			var local := Vector3((ix + 0.5) * Style.STUD - nx * Style.STUD * 0.5, size.y * 0.5, (iz + 0.5) * Style.STUD - nz * Style.STUD * 0.5)
+			parts.append([Style.stud_mesh(), Transform3D(Basis(), local)])
+	var studs := MeshInstance3D.new()
+	studs.mesh = Style.merge(parts)
+	studs.material_override = mi.material_override
+	# Шипы в своей системе координат: без масштаба детали, только поворот вокруг Y.
+	studs.transform = Transform3D(Basis(Vector3.UP, deg_to_rad(rot.y)), xf.origin)
+	if mi.has_meta("part_id"):
+		studs.set_meta("part_id", mi.get_meta("part_id"))
+	mi.get_parent().add_child(studs)
 
 
 static func _material(p: Dictionary) -> Material:
-	var color = p.get("color", "stone")
-	if str(p.get("material", "toon")) == "glow":
-		var glow_color: Color = Style.PALETTE.fire if str(color) == "fire" else Style.PALETTE.window
-		return Style.glow(glow_color, 2.5)
 	var sway := clampf(_num(p.get("sway"), 0.0), 0.0, 0.3)
-	return Style.toon(Style.to_palette(color), 0.04, false, sway)
+	return Style.part_material(p.get("color", "light_gray"), str(p.get("material", "")) == "glow", sway)
 
 
 static func _part_mesh(p: Dictionary) -> Mesh:
@@ -242,7 +278,7 @@ static func _add_effect(root: Node3D, e: Dictionary) -> void:
 		"light":
 			var l := OmniLight3D.new()
 			l.position = pos
-			l.light_color = Style.PALETTE.window
+			l.light_color = Color(1.0, 0.9, 0.7)
 			l.light_energy = clampf(_num(e.get("energy"), 1.2), 0.1, 4.0)
 			l.omni_range = clampf(_num(e.get("range"), 6.0), 1.0, 20.0)
 			root.add_child(l)

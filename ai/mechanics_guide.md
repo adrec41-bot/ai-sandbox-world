@@ -5,8 +5,9 @@ the game runs it with its own controllers, so you never write code. Pick the
 type that fits and tune the numbers. Forward is -Z for every object: build
 vehicles with the nose toward -Z and the rear toward +Z.
 
-Give the moving parts an "id" (part field, a short name). Several parts with
-the same id move together. Then animate them:
+Give the moving parts an "id" (a short name on a part or on bricks). All parts
+and bricks with the same id move together, e.g. a door made of bricks with
+"id": "door", or wheels made of cylinder parts with "id": "wheel". Then animate them:
 "animations": [ {
   "part": "id of the parts",
   "motion": "spin" | "swing" | "bob" | "angle",
@@ -48,7 +49,7 @@ ground: cars, bicycles, carts, horses, skateboards. W/S throttle and brake, A/D 
 air: planes, gliders, dragons. W/S throttle, A/D bank, Space nose up, Shift nose down;
 it takes off after a run-up faster than takeoff_speed and stalls when too slow.
 hover: helicopters, brooms, flying carpets, balloons, drones, UFOs. W/S forward and back,
-A/D turn, Space up, Shift down. A vehicle uses a box around all its parts for collision.
+A/D turn, Space up, Shift down. A vehicle uses a box around all its parts and bricks for collision.
 
 2. Equipment: the player presses E to put it on and E again to drop it.
 Model it around the attach point (origin) at its real size.
@@ -99,4 +100,4 @@ Door: "mechanics": {"type": "prop", "interact": "toggle",
   "animations": [{"part": "door", "motion": "angle", "axis": "y", "amount": 100, "by": "active", "pivot": [-0.5, 1, 0]}]}
 
 World physics: set_world_physics changes gravity, player speed, jump and time
-scale for everyone in the world (e.g. gravity 0.16 for the moon).
+scale in the player's world (e.g. gravity 0.16 for the moon).

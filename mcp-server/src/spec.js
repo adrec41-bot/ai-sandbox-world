@@ -36,6 +36,61 @@ export const partSchema = z
     if (p.shape === "extrude" && !p.outline) ctx.addIssue({ code: "custom", message: "extrude needs outline" });
   });
 
+// Кирпичи Lego на сетке шипов: x и z в шипах, y в пластинах. Та же проверка
+// и разворачивание команд (box, wall, roof, tower) есть в игре, scripts/bricks.gd.
+export const BRICK_TYPES = ["brick", "plate", "tile", "slope", "round", "cone"];
+export const BRICK_COMMANDS = ["box", "wall", "roof", "tower"];
+const int = (min, max) => z.number().int().min(min).max(max);
+const cell3 = z.tuple([int(-512, 512), int(-60, 600), int(-512, 512)]);
+const cell2 = z.tuple([int(-512, 512), int(-512, 512)]);
+
+export const brickSchema = z
+  .object({
+    type: z.enum([...BRICK_TYPES, ...BRICK_COMMANDS]).optional(),
+    color: z.string().max(32).optional(),
+    id: z.string().max(32).optional().describe("Bricks with the same id move together (mechanics.animations)"),
+    studs: z.boolean().optional(),
+    // кирпич
+    at: cell3.optional(),
+    size: z.tuple([int(1, 64), int(1, 64)]).optional(),
+    h: int(1, 60).optional(),
+    dir: z.enum(["+x", "-x", "+z", "-z"]).optional(),
+    // команды
+    from: z.union([cell3, cell2]).optional(),
+    to: z.union([cell3, cell2]).optional(),
+    hollow: z.boolean().optional(),
+    y: int(-60, 600).optional(),
+    height: int(1, 120).optional(),
+    thickness: int(1, 4).optional(),
+    openings: z
+      .array(
+        z.object({
+          at: int(0, 512),
+          width: int(1, 64).optional(),
+          y: int(0, 120).optional(),
+          height: int(1, 120).optional(),
+          fill: z.string().max(32).optional(),
+        }),
+      )
+      .max(32)
+      .optional(),
+    ridge: z.enum(["x", "z"]).optional(),
+    flat: z.boolean().optional(),
+    center: cell2.optional(),
+    radius: int(1, 32).optional(),
+  })
+  .superRefine((b, ctx) => {
+    const type = b.type ?? "brick";
+    const need = (cond, message) => cond || ctx.addIssue({ code: "custom", message });
+    if (BRICK_TYPES.includes(type)) need(b.at, `${type} needs at: [x, y, z]`);
+    if (type === "box") need(b.from?.length === 3 && b.to?.length === 3, "box needs from and to as [x, y, z]");
+    if (type === "wall" || type === "roof") need(b.from?.length === 2 && b.to?.length === 2, `${type} needs from and to as [x, z]`);
+    if (type === "wall" && b.from && b.to) {
+      need(b.from[0] === b.to[0] || b.from[1] === b.to[1], "wall must run along x or along z");
+    }
+    if (type === "tower") need(b.center, "tower needs center: [x, z]");
+  });
+
 // Механики: транспорт, снаряжение, интерактивные предметы. Пределы те же,
 // что в scripts/mechanics/mechanics.gd, игра проверяет их ещё раз.
 const animationSchema = z.object({
@@ -90,15 +145,19 @@ export const mechanicsSchema = z.object({
   animations: z.array(animationSchema).max(24).optional(),
 });
 
+export const CATEGORIES = ["buildings", "vehicles", "gear", "mechanisms", "nature", "decor"];
+
 export const objectSpecSchema = z.object({
   name: z.string().min(1).max(64),
+  category: z.enum(CATEGORIES).optional(),
   physics: z
     .object({
       mode: z.enum(["static", "rigid", "none"]),
       mass: num(0.1, 5000).optional(),
     })
     .optional(),
-  parts: z.array(partSchema).min(1).max(256),
+  bricks: z.array(brickSchema).max(6000).optional(),
+  parts: z.array(partSchema).max(256).optional(),
   effects: z
     .array(
       z.object({
@@ -113,8 +172,11 @@ export const objectSpecSchema = z.object({
     .optional(),
   mechanics: mechanicsSchema.optional(),
 }).superRefine((spec, ctx) => {
+  if (!spec.bricks?.length && !spec.parts?.length) {
+    ctx.addIssue({ code: "custom", path: ["bricks"], message: "spec needs bricks (or parts for shapes that bricks cannot make)" });
+  }
   // Анимация, которая ссылается на несуществующую деталь, ничего не сделает: лучше сказать агенту сразу.
-  const ids = new Set(spec.parts.map((p) => p.id).filter(Boolean));
+  const ids = new Set([...(spec.parts ?? []), ...(spec.bricks ?? [])].map((p) => p.id).filter(Boolean));
   for (const [i, a] of (spec.mechanics?.animations ?? []).entries()) {
     if (!ids.has(a.part)) {
       ctx.addIssue({ code: "custom", path: ["mechanics", "animations", i, "part"], message: `no part has id "${a.part}"` });

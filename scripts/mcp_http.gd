@@ -232,10 +232,22 @@ func _call_tool(tool_name: String, args: Dictionary) -> Dictionary:
 			res = bridge.run("reply", args)
 		"create_object":
 			var create := {"spec": args.get("spec"), "author": _client_name}
-			for key in ["prompt", "request_id"]:
+			for key in ["prompt", "request_id", "category"]:
 				if args.get(key) is String:
 					create[key] = args[key]
+			if args.get("place") is bool:
+				create["place"] = args.place
 			res = bridge.run("create", create)
+		"update_object":
+			res = bridge.run("update", args)
+		"get_object_spec":
+			res = bridge.run("get_spec", args)
+		"ask_player":
+			res = bridge.run("ask", args)
+		"report_progress":
+			res = bridge.run("progress", args)
+		"get_area":
+			res = bridge.run("area", args)
 		"set_world_physics":
 			var change := {"author": _client_name}
 			for key in ["gravity", "player_speed", "jump", "time_scale", "reset"]:
@@ -269,7 +281,7 @@ func _tools() -> Array:
 		},
 		{
 			"name": "wait_for_player_request",
-			"description": "Wait until a player types a request in the game's input field, then return it with its request_id. Returns 'no new requests' after timeout_seconds; then call it again. Build the request with create_object (pass request_id) or answer with reply_to_player.",
+			"description": "Wait until the player types a request in the game, then return it with its request_id, kind, size, marked area and edit_target or edit_item. Also returns the player's answers to ask_player (type 'answer'). Returns 'no new requests' after timeout_seconds; then call it again. Build with create_object or update_object (pass request_id), ask with ask_player, or answer with reply_to_player.",
 			"inputSchema": {"type": "object", "properties": {
 				"timeout_seconds": {"type": "number", "description": "How long to wait, 1-300 seconds (default 50)."},
 			}},
@@ -285,23 +297,65 @@ func _tools() -> Array:
 		},
 		{
 			"name": "get_world_info",
-			"description": "World size, player position and facing, village center, palette, object count. Pass sample_points to get terrain heights at [x, z] points.",
+			"description": "World size in studs and meters, player position and facing, the area the player marked, LEGO colors, object count and physics. Pass sample_points to get ground heights at [x, z] points.",
 			"inputSchema": {"type": "object", "properties": {
 				"sample_points": {"type": "array", "items": {"type": "array", "items": number}, "maxItems": 64},
 			}},
 		},
 		{
 			"name": "create_object",
-			"description": "Create an object you designed and put it into the player's inventory; the player places it in the world themselves. Pass request_id when building a player request. spec follows the format from get_style_guide: parts (box, prism, sphere, cylinder, cone, capsule, torus, lathe, extrude) in meters, y = 0 is the ground, colors are palette names. Add spec.mechanics to make it rideable (vehicle: bicycle, car, plane, helicopter), wearable (equipment: jetpack, wings, boots) or interactive (prop: trampoline, door, carousel); see the mechanics section of the guide.",
+			"description": "Create an object you designed from LEGO bricks and put it into the player's inventory. Pass request_id when building a player request. If the request has an area (the player marked a footprint), the object is placed right there; pass place: true to place it in front of the player otherwise. spec follows get_style_guide: bricks (brick, plate, tile, slope, round, cone with at/size in studs and plates) and the box, wall, roof and tower commands; parts only for shapes bricks cannot make. Add spec.mechanics to make it rideable (vehicle), wearable (equipment) or interactive (prop).",
 			"inputSchema": {"type": "object", "required": ["spec"], "properties": {
-				"spec": {"type": "object", "description": "Object spec: {name, physics: {mode}, parts: [...], effects: [...], mechanics: {type, ...}}"},
+				"spec": {"type": "object", "description": "Object spec: {name, category, physics: {mode}, bricks: [...], parts: [...], effects: [...], mechanics: {type, ...}}"},
 				"request_id": {"type": "string", "description": "The request from wait_for_player_request this object answers."},
 				"prompt": {"type": "string", "description": "What the player asked for."},
+				"category": {"type": "string", "enum": ["buildings", "vehicles", "gear", "mechanisms", "nature", "decor"], "description": "Inventory category."},
+				"place": {"type": "boolean", "description": "Also place it in the world (on the marked area, or in front of the player)."},
+			}},
+		},
+		{
+			"name": "update_object",
+			"description": "Change an existing object: a placed object (object_id, from edit_target or list_objects) or an inventory item (item_id, from edit_item). Read it first with get_object_spec, then send the whole changed spec. The change can be undone by the player with Ctrl+Z.",
+			"inputSchema": {"type": "object", "required": ["spec"], "properties": {
+				"object_id": {"type": "string"},
+				"item_id": {"type": "string"},
+				"spec": {"type": "object"},
+				"request_id": {"type": "string"},
+			}},
+		},
+		{
+			"name": "get_object_spec",
+			"description": "The full spec of a placed object (object_id) or an inventory item (item_id), to change it with update_object.",
+			"inputSchema": {"type": "object", "properties": {"object_id": {"type": "string"}, "item_id": {"type": "string"}}},
+		},
+		{
+			"name": "ask_player",
+			"description": "Ask the player a short question about a request when it is really unclear (style, size, which variant). Give 2-4 options as buttons; the player can also type an answer. The answer comes from wait_for_player_request as type 'answer' with the same request_id. Write in the player's language.",
+			"inputSchema": {"type": "object", "required": ["request_id", "question"], "properties": {
+				"request_id": {"type": "string"},
+				"question": {"type": "string"},
+				"options": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+			}},
+		},
+		{
+			"name": "report_progress",
+			"description": "Show what you are doing on the request card in the game, e.g. 'Building the walls'. Use it for big builds that take a while. Write in the player's language.",
+			"inputSchema": {"type": "object", "required": ["request_id", "text"], "properties": {
+				"request_id": {"type": "string"},
+				"text": {"type": "string"},
+			}},
+		},
+		{
+			"name": "get_area",
+			"description": "Objects standing on a rectangle, with their top heights, so you do not build on top of them. Without arguments it checks the area the player marked; or pass from and to as [x, z] in meters.",
+			"inputSchema": {"type": "object", "properties": {
+				"from": {"type": "array", "items": number},
+				"to": {"type": "array", "items": number},
 			}},
 		},
 		{
 			"name": "set_world_physics",
-			"description": "Change the physics of the whole shared world for everyone: gravity (1 normal, 0.16 moon, 0 weightless, up to 5), player_speed (0.2-5), jump height (0.2-5), time_scale (0.1-3, slow motion below 1). Omitted values stay as they are; reset: true restores defaults. Returns the current values.",
+			"description": "Change the physics of the player's world: gravity (1 normal, 0.16 moon, 0 weightless, up to 5), player_speed (0.2-5), jump height (0.2-5), time_scale (0.1-3, slow motion below 1). Omitted values stay as they are; reset: true restores defaults. Returns the current values.",
 			"inputSchema": {"type": "object", "properties": {
 				"gravity": number, "player_speed": number, "jump": number, "time_scale": number,
 				"reset": {"type": "boolean"},
@@ -309,7 +363,7 @@ func _tools() -> Array:
 		},
 		{
 			"name": "list_objects",
-			"description": "Objects the players have placed in the world: id, name, author, prompt, position.",
+			"description": "Objects placed in the world: id, name, author, prompt, position, brick count.",
 			"inputSchema": {"type": "object", "properties": {}},
 		},
 		{
